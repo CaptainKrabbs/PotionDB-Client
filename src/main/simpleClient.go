@@ -173,7 +173,7 @@ func transactionCycle(connection net.Conn) {
 	for nDone := 0; nDone < targetTrans; nDone++ {
 		fmt.Println("Starting transaction...")
 		//Send start transaction
-		startTrans := antidote.CreateStartTransaction()
+		startTrans := antidote.CreateStartTransaction(nil)
 		//reader.ReadString('\n')
 		antidote.SendProto(antidote.StartTrans, startTrans, connection)
 
