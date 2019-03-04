@@ -29,12 +29,14 @@ const (
 )
 
 var (
+	//keys = [1]string{"topk1"}
 	keys = [2]string{"topk1", "topk2"}
 	//keys = [4]string{"counter1", "counter2", "counter3", "counter4"}
 	//buckets = [2][]byte{[]byte("bkt1"), []byte("bkt2")}
-	//buckets = [2]string{"bkt1", "bkt2"}
-	buckets = [1]string{"bkt"}
-	reader  = bufio.NewReader(os.Stdin)
+	buckets = [2]string{"bkt1", "bkt2"}
+	//buckets = [1]string{"bkt"}
+	elems  = [...]string{"a", "b", "c", "d", "e"}
+	reader = bufio.NewReader(os.Stdin)
 )
 
 /*
@@ -43,17 +45,21 @@ Give some random (but low) delay between transactions. Repeat if they get aborte
 */
 
 func main() {
-	connection, err := net.Dial("tcp", "127.0.0.1:8087")
-	tools.CheckErr("Network connection establishment err", err)
+	//connection, err := net.Dial("tcp", "127.0.0.1:8087")
+	//tools.CheckErr("Network connection establishment err", err)
 	rand.Seed(time.Now().UTC().UnixNano())
-	/*
-		for i := 0; i < nClients; i++ {
-			go transactionCycle(connection)
-		}
-		fmt.Println("Click enter once transactions stop happening.")
-		reader.ReadString('\n')
-	*/
-	testSet(connection)
+	//transactionCycle(connection)
+
+	//for i := 0; i < 1; i++ {
+	for i := 0; i < nClients; i++ {
+		conn, err := net.Dial("tcp", "127.0.0.1:8087")
+		tools.CheckErr("Network connection establishment err", err)
+		go transactionCycle(conn)
+	}
+	fmt.Println("Click enter once transactions stop happening.")
+	reader.ReadString('\n')
+
+	//testSet(connection)
 	//testStaticUpdate(connection)
 	//time.Sleep(time.Duration(1000) * time.Millisecond)
 	//testStaticRead(connection, antidote.CRDTType_COUNTER, 10)
@@ -181,19 +187,12 @@ func transactionCycle(connection net.Conn) {
 		_, receivedProto, _ := antidote.ReceiveProto(connection)
 		startTransResp := receivedProto.(*antidote.ApbStartTransactionResp)
 		transId := startTransResp.GetTransactionDescriptor()
-		//fmt.Println("transId:", transId, "len:", len(transId))
-		//fmt.Println("error code:", startTransResp.GetErrorcode())
-		//fmt.Println("success?", startTransResp.GetSuccess())
 
 		fmt.Println("Starting to send operations...")
 		createAndSendOps(connection, transId)
-		//debugWithTopk(connection, transId)
-		//debugWithCounter(connection, transId)
 
 		fmt.Println("Sending commit...")
 		commitTrans := antidote.CreateCommitTransaction(transId)
-		//fmt.Println(commitTrans)
-		//reader.ReadString('\n')
 		antidote.SendProto(antidote.CommitTrans, commitTrans, connection)
 
 		//Receive reply, check if it is commit or abort?
@@ -244,7 +243,7 @@ func debugWithCounter(connection net.Conn, transId []byte) {
 
 func debugWithTopk(connection net.Conn, transId []byte) {
 
-	protoType, writeProto := antidote.UpdateObjs, getNextWrite(transId, keys[0])
+	protoType, writeProto := antidote.UpdateObjs, getNextWrite(transId, keys[0], antidote.CRDTType_TOPK)
 	fmt.Println("Sending write for", keys[0])
 	//reader.ReadString('\n')
 	antidote.SendProto(byte(protoType), writeProto, connection)
@@ -260,7 +259,7 @@ func debugWithTopk(connection net.Conn, transId []byte) {
 		fmt.Println("Reply type, proto:", replyType1, replyProto1)
 	*/
 
-	protoType, readProto := antidote.ReadObjs, getNextRead(transId, keys[0])
+	protoType, readProto := antidote.ReadObjs, getNextRead(transId, keys[0], antidote.CRDTType_TOPK)
 	fmt.Println("Sending read for", keys[0])
 	//reader.ReadString('\n')
 	antidote.SendProto(byte(protoType), readProto, connection)
@@ -305,10 +304,10 @@ func getNextOp(transId []byte) (protoType byte, protoBuf proto.Message) {
 	key := keys[rand.Intn(len(keys))]
 	if rand.Float32() < writeProb {
 		//fmt.Println("Next proto is a write.")
-		protoType, protoBuf = antidote.UpdateObjs, getNextWrite(transId, key)
+		protoType, protoBuf = antidote.UpdateObjs, getNextWrite(transId, key, antidote.CRDTType_ORSET)
 	} else {
 		//fmt.Println("Next proto is a read.")
-		protoType, protoBuf = antidote.ReadObjs, getNextRead(transId, key)
+		protoType, protoBuf = antidote.ReadObjs, getNextRead(transId, key, antidote.CRDTType_ORSET)
 	}
 	if protoBuf == nil {
 		fmt.Println("Warning - nil protoBuf on getNextOp!")
@@ -316,23 +315,31 @@ func getNextOp(transId []byte) (protoType byte, protoBuf proto.Message) {
 	return
 }
 
-func getNextWrite(transId []byte, key string) (updateBuf *antidote.ApbUpdateObjects) {
-	//fmt.Println("Creating write")
-	rndPlayer, rndValue := rand.Intn(maxId), rand.Intn(maxValue)
-	//rndPlayer, rndValue := 1, 887
-	topkWrite := antidote.CreateTopkUpdate(rndPlayer, rndValue)
-	updateBuf = antidote.CreateUpdateObjs(transId, key, antidote.CRDTType_TOPK, bucket, topkWrite)
-	//updateBuf = antidote.CreateUpdateObjs(transId, "topk1", antidote.CRDTType_TOPK, "bkt", topkWrite)
-	//fmt.Println("Write transId:", updateBuf.GetTransactionDescriptor())
-	//fmt.Println("Values sent:", rndPlayer, rndValue)
+func getNextWrite(transId []byte, key string, crdtType antidote.CRDTType) (updateBuf *antidote.ApbUpdateObjects) {
+	switch crdtType {
+	case antidote.CRDTType_TOPK:
+		rndPlayer, rndValue := rand.Intn(maxId), rand.Intn(maxValue)
+		//rndPlayer, rndValue := 1, 887
+		topkWrite := antidote.CreateTopkUpdate(rndPlayer, rndValue)
+		updateBuf = antidote.CreateUpdateObjs(transId, key, antidote.CRDTType_TOPK, bucket, topkWrite)
+		//updateBuf = antidote.CreateUpdateObjs(transId, "topk1", antidote.CRDTType_TOPK, "bkt", topkWrite)
+		//fmt.Println("Write transId:", updateBuf.GetTransactionDescriptor())
+		//fmt.Println("Values sent:", rndPlayer, rndValue)
+	case antidote.CRDTType_ORSET:
+		rndElem := elems[rand.Intn(len(elems))]
+		var setWrite *antidote.ApbSetUpdate
+		if rand.Float32() < 0.5 {
+			setWrite = antidote.CreateSetUpdate(antidote.ApbSetUpdate_ADD, []string{rndElem})
+		} else {
+			setWrite = antidote.CreateSetUpdate(antidote.ApbSetUpdate_REMOVE, []string{rndElem})
+		}
+		updateBuf = antidote.CreateUpdateObjs(transId, key, antidote.CRDTType_ORSET, bucket, setWrite)
+	}
 	return
 }
 
-func getNextRead(transId []byte, key string) (readBuf *antidote.ApbReadObjects) {
-	//fmt.Println("Creating read")
-	readBuf = antidote.CreateReadObjs(transId, key, antidote.CRDTType_TOPK, bucket)
-	//fmt.Println("Read transId:", readBuf.GetTransactionDescriptor())
-	return
+func getNextRead(transId []byte, key string, crdtType antidote.CRDTType) (readBuf *antidote.ApbReadObjects) {
+	return createRead(transId, key, crdtType)
 }
 
 func createRead(transId []byte, key string, crdtType antidote.CRDTType) (readBuf *antidote.ApbReadObjects) {
