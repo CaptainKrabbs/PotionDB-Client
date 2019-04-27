@@ -19,13 +19,16 @@ const (
 	maxId       = 50000000
 	maxValue    = 50
 	targetTrans = 50
-	writeProb   = 0.7
+	//targetTrans = 10
+	writeProb = 0.7
 	//writeProb = 0.5
-	minOpsPerTrans   = 3
-	maxOpsPerTrans   = 10
-	maxSleepTime     = 100
-	nClients         = 3
-	beforeStartSleep = 2000
+	minOpsPerTrans = 3
+	maxOpsPerTrans = 10
+	//maxOpsPerTrans = 4
+	maxSleepTime      = 100
+	nClients          = 3
+	beforeStartSleep  = 2000
+	sleepBeforeVerify = 4000
 )
 
 var (
@@ -35,8 +38,9 @@ var (
 	//buckets = [2][]byte{[]byte("bkt1"), []byte("bkt2")}
 	buckets = [2]string{"bkt1", "bkt2"}
 	//buckets = [1]string{"bkt"}
-	elems  = [...]string{"a", "b", "c", "d", "e"}
-	reader = bufio.NewReader(os.Stdin)
+	elems   = [...]string{"a", "b", "c", "d", "e"}
+	servers = [...]string{"127.0.0.1:8087", "127.0.0.1:8088"}
+	reader  = bufio.NewReader(os.Stdin)
 )
 
 /*
@@ -52,9 +56,9 @@ func main() {
 
 	//for i := 0; i < 1; i++ {
 	for i := 0; i < nClients; i++ {
-		conn, err := net.Dial("tcp", "127.0.0.1:8087")
+		conn, err := net.Dial("tcp", servers[i%len(servers)])
 		tools.CheckErr("Network connection establishment err", err)
-		go transactionCycle(conn)
+		go transactionCycle(i, conn)
 	}
 	fmt.Println("Click enter once transactions stop happening.")
 	reader.ReadString('\n')
@@ -172,7 +176,7 @@ func testGenericUpdate(connection net.Conn, crdtType antidote.CRDTType, args []c
 	fmt.Println("Received type, proto: ", protoType, receivedProto)
 }
 
-func transactionCycle(connection net.Conn) {
+func transactionCycle(id int, connection net.Conn) {
 	fmt.Println("Sleeping a bit before starting...")
 	time.Sleep(time.Duration(beforeStartSleep) * time.Millisecond)
 
@@ -214,6 +218,11 @@ func transactionCycle(connection net.Conn) {
 	}
 
 	fmt.Println("Finish!")
+	connection.Close()
+
+	if id == 0 {
+		verifyReplication()
+	}
 }
 
 func debugWithCounter(connection net.Conn, transId []byte) {
@@ -360,6 +369,111 @@ func createCounterWrite(transId []byte, key string) (updateBuf *antidote.ApbUpda
 func getRandomLocationParams() (key string, bucket string) {
 	key, bucket = keys[rand.Intn(len(keys))], buckets[rand.Intn(len(buckets))]
 	return
+}
+
+//For every key combination, checks if all servers have the same results.
+//Only works for sets as of now.
+//TODO: Divide this in submethods
+func verifyReplication() {
+	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
+	//Change the "1" when we start supporting multiple crdt types
+	nObjects := len(keys) * len(buckets) * 1
+	//Wait for replication
+	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
+	//server (serverID) -> bucket -> key -> crdtType?
+	//results := make(map[int]map[string]map[string]map[antidote.CRDTType]crdt.State)
+	//results := make([]crdt.State, 0, nObjects)
+	results := make(map[int][]crdt.State)
+	//orderedRequests := make([]antidote.KeyParams, nObjects)
+
+	//Prepare the results map
+	/*
+		for serverID, _ := range servers {
+			bucketMap := make(map[string]map[string]map[antidote.CRDTType]crdt.State)
+			for _, bucket := range buckets {
+				keyMap := make(map[string]map[antidote.CRDTType]crdt.State)
+				for _, key := range keys {
+					keyMap[key] = make(map[antidote.CRDTType]crdt.State)
+				}
+				bucketMap[bucket] = keyMap
+			}
+			results[serverID] = bucketMap
+		}
+	*/
+
+	//Send query and obtain results
+	for serverID, serverString := range servers {
+		conn, _ := net.Dial("tcp", serverString)
+		results[serverID] = make([]crdt.State, 0, nObjects)
+
+		//Preparing and sending the query
+		readParams := make([]antidote.ReadObjectParams, 0, nObjects)
+		for _, bucket := range buckets {
+			for _, key := range keys {
+				readParams = append(readParams, antidote.ReadObjectParams{KeyParams: antidote.CreateKeyParams(key, antidote.CRDTType_ORSET, bucket)})
+			}
+		}
+		proto := antidote.CreateStaticReadObjs(readParams)
+		antidote.SendProto(antidote.StaticReadObjs, proto, conn)
+
+		//Receiving reply and decoding it
+		_, reply, _ := antidote.ReceiveProto(conn)
+		typedReply := reply.(*antidote.ApbStaticReadObjectsResp)
+		serverResults := results[serverID]
+		for _, objProto := range typedReply.GetObjects().GetObjects() {
+			//TODO: Take in consideration the CRDT type here
+			allObjsBytes := objProto.GetSet().GetValue()
+			setState := crdt.SetAWValueState{Elems: make([]crdt.Element, len(allObjsBytes))}
+			//Convert byte[][] back to strings
+			for i, objBytes := range allObjsBytes {
+				setState.Elems[i] = crdt.Element(objBytes)
+			}
+			serverResults = append(serverResults, setState)
+		}
+		//func CreateStaticReadObjs(readParams []ReadObjectParams) (protobuf *ApbStaticReadObjects)
+	}
+
+	ok := true
+	//Compare the results
+	firstServerResults := results[0]
+	//First compare if all arrays have the same length. If they don't, they aren't equal for sure.
+	for _, serverResult := range results {
+		if len(serverResult) != len(firstServerResults) {
+			ok = false
+			break
+		}
+	}
+	if !ok {
+		fmt.Println("Results don't match - number of objects in each replica is different!")
+		return
+	}
+	//Now compare each object
+	for i := 1; i < len(results) && !ok; i++ {
+		for j, state := range firstServerResults {
+			//TODO: Consider CRDT types
+			otherState := results[i][j]
+			setState := state.(crdt.SetAWValueState)
+			otherSetState := otherState.(crdt.SetAWValueState)
+			if len(setState.Elems) != len(otherSetState.Elems) {
+				fmt.Println("Results don't match - number of elements in one of the set states is different")
+				ok = false
+				break
+			}
+			for k, elem := range setState.Elems {
+				if otherSetState.Elems[k] != elem {
+					fmt.Println("Results don't match - different elements in one of the set states!")
+					ok = false
+					break
+				}
+			}
+			if !ok {
+				break
+			}
+		}
+	}
+	if ok {
+		fmt.Println("Results match - success!")
+	}
 }
 
 //Note: For now this only knows how to print sets.
