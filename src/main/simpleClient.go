@@ -18,28 +18,31 @@ const (
 	bucket      = "bkt"
 	maxId       = 50000000
 	maxValue    = 50
-	targetTrans = 50
+	targetTrans = 10000
 	//targetTrans = 10
+	//writeProb = 0
 	writeProb = 0.7
-	//writeProb = 0.5
+	//writeProb      = 1
+	addProb        = 0.5
 	minOpsPerTrans = 3
 	maxOpsPerTrans = 10
 	//maxOpsPerTrans = 4
 	maxSleepTime      = 100
-	nClients          = 3
+	nClients          = 4
 	beforeStartSleep  = 2000
 	sleepBeforeVerify = 4000
 )
 
 var (
 	//keys = [1]string{"topk1"}
-	keys = [2]string{"topk1", "topk2"}
+	keys = []string{"topk1", "topk2"}
 	//keys = [4]string{"counter1", "counter2", "counter3", "counter4"}
 	//buckets = [2][]byte{[]byte("bkt1"), []byte("bkt2")}
-	buckets = [2]string{"bkt1", "bkt2"}
+	buckets = []string{"bkt1", "bkt2"}
 	//buckets = [1]string{"bkt"}
-	elems   = [...]string{"a", "b", "c", "d", "e"}
-	servers = [...]string{"127.0.0.1:8087", "127.0.0.1:8088"}
+	elems = []string{"a", "b", "c", "d", "e"}
+	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
+	servers = []string{"127.0.0.1:8087"}
 	reader  = bufio.NewReader(os.Stdin)
 )
 
@@ -51,18 +54,20 @@ Give some random (but low) delay between transactions. Repeat if they get aborte
 func main() {
 	//connection, err := net.Dial("tcp", "127.0.0.1:8087")
 	//tools.CheckErr("Network connection establishment err", err)
-	rand.Seed(time.Now().UTC().UnixNano())
-	//transactionCycle(connection)
+	/*
+		rand.Seed(time.Now().UTC().UnixNano())
+		//transactionCycle(connection)
 
-	//for i := 0; i < 1; i++ {
-	for i := 0; i < nClients; i++ {
-		conn, err := net.Dial("tcp", servers[i%len(servers)])
-		tools.CheckErr("Network connection establishment err", err)
-		go transactionCycle(i, conn)
-	}
-	fmt.Println("Click enter once transactions stop happening.")
-	reader.ReadString('\n')
-
+		//for i := 0; i < 1; i++ {
+		for i := 0; i < nClients; i++ {
+			conn, err := net.Dial("tcp", servers[i%len(servers)])
+			tools.CheckErr("Network connection establishment err", err)
+			go transactionCycle(i, conn)
+		}
+		fmt.Println("Click enter once transactions stop happening.")
+		reader.ReadString('\n')
+	*/
+	benchmark()
 	//testSet(connection)
 	//testStaticUpdate(connection)
 	//time.Sleep(time.Duration(1000) * time.Millisecond)
@@ -71,22 +76,41 @@ func main() {
 
 //TODO: Test this and testStaticUpdate() with antidote
 func testStaticRead(connection net.Conn, crdtType antidote.CRDTType, nReads int) (receivedProto proto.Message) {
-	reads := make([]antidote.ReadObjectParams, nReads)
+	reads := createReadObjectParams(crdtType, nReads)
+	proto := antidote.CreateStaticReadObjs(reads)
+	antidote.SendProto(antidote.StaticReadObjs, proto, connection)
+	//fmt.Println("Proto sent! Waiting for reply.")
+
+	//Wait for reply
+	antidote.ReceiveProto(connection)
+	//protoType, receivedProto, _ := antidote.ReceiveProto(connection)
+	//fmt.Println("Received type, proto: ", protoType, receivedProto)
+
+	return
+}
+
+func testRead(connection net.Conn, transId []byte, crdtType antidote.CRDTType, nReads int) (receivedProto proto.Message) {
+	reads := createReadObjectParams(crdtType, nReads)
+	proto := antidote.CreateReadObjsFromArray(transId, reads)
+	antidote.SendProto(antidote.ReadObjs, proto, connection)
+	//fmt.Println("Proto sent! Waiting for reply.")
+
+	//Wait for reply
+	antidote.ReceiveProto(connection)
+	//protoType, receivedProto, _ := antidote.ReceiveProto(connection)
+	//fmt.Println("Received type, proto: ", protoType, receivedProto)
+
+	return
+}
+
+func createReadObjectParams(crdtType antidote.CRDTType, nReads int) (reads []antidote.ReadObjectParams) {
+	reads = make([]antidote.ReadObjectParams, nReads)
 	for i := 0; i < len(reads); i++ {
 		rndKey, rndBucket := getRandomLocationParams()
 		reads[i] = antidote.ReadObjectParams{
 			KeyParams: antidote.CreateKeyParams(rndKey, crdtType, rndBucket),
 		}
 	}
-
-	proto := antidote.CreateStaticReadObjs(reads)
-	antidote.SendProto(antidote.StaticReadObjs, proto, connection)
-	fmt.Println("Proto sent! Waiting for reply.")
-
-	//Wait for reply
-	protoType, receivedProto, _ := antidote.ReceiveProto(connection)
-	fmt.Println("Received type, proto: ", protoType, receivedProto)
-
 	return
 }
 
@@ -118,7 +142,7 @@ func testSet(connection net.Conn) {
 	for i := 0; i < len(adds); i++ {
 		adds[i] = crdt.Add{Element: crdt.Element(fmt.Sprint(rand.Uint64()))}
 	}
-	testGenericUpdate(connection, antidote.CRDTType_ORSET, adds)
+	testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, adds)
 
 	testStaticRead(connection, antidote.CRDTType_ORSET, 5)
 
@@ -126,7 +150,7 @@ func testSet(connection net.Conn) {
 	for i := 0; i < len(rems); i++ {
 		rems[i] = crdt.Remove{Element: crdt.Element(fmt.Sprint(rand.Uint64()))}
 	}
-	testGenericUpdate(connection, antidote.CRDTType_ORSET, rems)
+	testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, rems)
 
 	testStaticRead(connection, antidote.CRDTType_ORSET, 5)
 
@@ -139,7 +163,7 @@ func testSet(connection net.Conn) {
 		}
 		addAll[i] = crdt.AddAll{Elems: rndElems}
 	}
-	testGenericUpdate(connection, antidote.CRDTType_ORSET, addAll)
+	testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, addAll)
 
 	testStaticRead(connection, antidote.CRDTType_ORSET, 5)
 
@@ -151,29 +175,46 @@ func testSet(connection net.Conn) {
 		}
 		remAll[i] = crdt.RemoveAll{Elems: rndElems}
 	}
-	testGenericUpdate(connection, antidote.CRDTType_ORSET, remAll)
+	testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, remAll)
 
 	testStaticRead(connection, antidote.CRDTType_ORSET, 5)
 }
 
-func testGenericUpdate(connection net.Conn, crdtType antidote.CRDTType, args []crdt.UpdateArguments) {
-	updates := make([]antidote.UpdateObjectParams, len(args))
+func testGenericStaticUpdate(connection net.Conn, crdtType antidote.CRDTType, args []crdt.UpdateArguments) {
+	updates := createUpdateObjectParams(crdtType, args)
+	proto := antidote.CreateStaticUpdateObjs(updates)
+	antidote.SendProto(antidote.StaticUpdateObjs, proto, connection)
+	//fmt.Println("Proto update sent! Waiting for reply.")
+
+	//Wait for reply
+	antidote.ReceiveProto(connection)
+	//protoType, receivedProto, _ := antidote.ReceiveProto(connection)
+	//fmt.Println("Received type, proto: ", protoType, receivedProto)
+}
+
+func testGenericUpdate(connection net.Conn, transId []byte, crdtType antidote.CRDTType, args []crdt.UpdateArguments) {
+	updates := createUpdateObjectParams(crdtType, args)
+	proto := antidote.CreateUpdateObjsFromArray(transId, updates)
+	antidote.SendProto(antidote.UpdateObjs, proto, connection)
+	//fmt.Println("Proto update sent! Waiting for reply.")
+
+	//Wait for reply
+	antidote.ReceiveProto(connection)
+	//protoType, receivedProto, _ := antidote.ReceiveProto(connection)
+	//fmt.Println("Received type, proto: ", protoType, receivedProto)
+}
+
+func createUpdateObjectParams(crdtType antidote.CRDTType, args []crdt.UpdateArguments) (updates []antidote.UpdateObjectParams) {
+	updates = make([]antidote.UpdateObjectParams, len(args))
 	for i := 0; i < len(args); i++ {
 		rndKey, rndBucket := getRandomLocationParams()
-		fmt.Println("Generating update op to key, bucket", rndKey, rndBucket)
+		//fmt.Println("Generating update op to key, bucket", rndKey, rndBucket)
 		updates[i] = antidote.UpdateObjectParams{
 			KeyParams:  antidote.CreateKeyParams(rndKey, crdtType, rndBucket),
 			UpdateArgs: args[i],
 		}
 	}
-
-	proto := antidote.CreateStaticUpdateObjs(updates)
-	antidote.SendProto(antidote.StaticUpdateObjs, proto, connection)
-	fmt.Println("Proto update sent! Waiting for reply.")
-
-	//Wait for reply
-	protoType, receivedProto, _ := antidote.ReceiveProto(connection)
-	fmt.Println("Received type, proto: ", protoType, receivedProto)
+	return
 }
 
 func transactionCycle(id int, connection net.Conn) {
@@ -474,6 +515,145 @@ func verifyReplication() {
 	if ok {
 		fmt.Println("Results match - success!")
 	}
+}
+
+func benchmark() {
+	keys = generateRandomKeys(10)
+	buckets = generateRandomBuckets(10)
+	elems := generateRandomElems(100)
+
+	rand.Seed(0)
+	nOpsRange := maxOpsPerTrans - minOpsPerTrans
+	finishChan := make(chan int64)
+	totalTime := int64(0)
+
+	for i := 0; i < nClients; i++ {
+		conn, err := net.Dial("tcp", servers[i%len(servers)])
+		tools.CheckErr("Network connection establishment err", err)
+		go executeStaticBenchmark(i, conn, elems, nOpsRange, finishChan)
+		//go executeNonStaticBenchmark(i, conn, elems, nOpsRange, finishChan)
+	}
+
+	for i := 0; i < nClients; i++ {
+		totalTime += <-finishChan
+	}
+
+	//nano -> ms
+	estimatedTime := totalTime / (nClients * 1000000)
+	fmt.Println("Time elapsed (ms):", estimatedTime)
+	fmt.Println("Estimated nOps:", ((maxOpsPerTrans + minOpsPerTrans) / 2))
+	fmt.Println("Number of transactions:", targetTrans)
+	fmt.Println("Txns/s (total):", targetTrans*1000*nClients/(estimatedTime))
+	fmt.Println("Txns/s (per client):", targetTrans*1000/estimatedTime)
+}
+
+func executeNonStaticBenchmark(clientID int, connection net.Conn, elements []crdt.Element, nOpsRange int, finishChan chan int64) {
+	startTime := time.Now().UTC().UnixNano()
+	var previousTs []byte = nil
+	for nDone := 0; nDone < targetTrans; nDone += 1 {
+		//Start txn
+		antidote.SendProto(antidote.StartTrans, antidote.CreateStartTransaction(previousTs), connection)
+		_, receivedProto, _ := antidote.ReceiveProto(connection)
+		startTransResp := receivedProto.(*antidote.ApbStartTransactionResp)
+		previousTs = startTransResp.GetTransactionDescriptor()
+
+		nOps := rand.Intn(nOpsRange) + minOpsPerTrans
+		nWrites := int(float32(nOps) * writeProb)
+		nReads := nOps - nWrites
+
+		if nWrites > 0 {
+			updArgs := getRandomSetUpdateArgs(nWrites, elements)
+			testGenericUpdate(connection, previousTs, antidote.CRDTType_ORSET, updArgs)
+		}
+		if nReads > 0 {
+			//fmt.Printf("Client %d preparing read.\n", clientID)
+			testRead(connection, previousTs, antidote.CRDTType_ORSET, nReads)
+		}
+		//fmt.Printf("Client %d finished processing txn %d.\n", clientID, nDone)
+		//Send commit, wait for reply and continue
+		//fmt.Printf("Client %d sending commit for txn %d.\n", clientID, nDone)
+		commitTxn := antidote.CreateCommitTransaction(previousTs)
+		antidote.SendProto(antidote.CommitTrans, commitTxn, connection)
+
+		//fmt.Printf("Client %d waiting for reply for txn %d.\n", clientID, nDone)
+		//Receive reply, check if it is commit or abort?
+		if (nDone+1)%(targetTrans/10) == 0 {
+			fmt.Printf("Client %d completed txn number %d.\n", clientID, nDone+1)
+		}
+		_, receivedProto, _ = antidote.ReceiveProto(connection)
+		commitReply := receivedProto.(*antidote.ApbCommitResp)
+		previousTs = commitReply.GetCommitTime()
+	}
+	totalTime := time.Now().UTC().UnixNano() - startTime
+	if clientID == 0 {
+		verifyReplication()
+	}
+	finishChan <- totalTime
+}
+
+func executeStaticBenchmark(clientID int, connection net.Conn, elements []crdt.Element, nOpsRange int, finishChan chan int64) {
+	startTime := time.Now().UTC().UnixNano()
+	for nDone := 0; nDone < targetTrans; nDone += 1 {
+
+		nOps := rand.Intn(nOpsRange) + minOpsPerTrans
+		nWrites := int(float32(nOps) * writeProb)
+		nReads := nOps - nWrites
+
+		if nWrites > 0 {
+			updArgs := getRandomSetUpdateArgs(nWrites, elements)
+			testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, updArgs)
+			//Send writes
+		}
+
+		if nReads > 0 {
+			testStaticRead(connection, antidote.CRDTType_ORSET, nReads)
+		}
+		//fmt.Printf("Client %d finished processing txn %d.\n", clientID, nDone)
+		if (nDone+1)%(targetTrans/10) == 0 {
+			fmt.Printf("Client %d completed txn number %d.\n", clientID, nDone+1)
+		}
+	}
+	totalTime := time.Now().UTC().UnixNano() - startTime
+	if clientID == 0 {
+		verifyReplication()
+	}
+	finishChan <- totalTime
+}
+
+func getRandomSetUpdateArgs(nWrites int, elements []crdt.Element) (updArgs []crdt.UpdateArguments) {
+	updArgs = make([]crdt.UpdateArguments, nWrites)
+	for i := 0; i < len(updArgs); i++ {
+		if rand.Float64() < addProb {
+			updArgs[i] = crdt.Add{Element: elements[rand.Intn(100)]}
+		} else {
+			updArgs[i] = crdt.Remove{Element: elements[rand.Intn(100)]}
+		}
+	}
+	return
+}
+
+func generateRandomKeys(number int) (rndKeys []string) {
+	rndKeys = make([]string, number)
+	for i := 0; i < number; i++ {
+		rndKeys[i] = fmt.Sprint(rand.Int())
+	}
+	return rndKeys
+}
+
+func generateRandomBuckets(number int) (rndBuckets []string) {
+	rndBuckets = make([]string, number)
+	for i := 0; i < number; i++ {
+		rndBuckets[i] = fmt.Sprint(rand.Int())
+	}
+	return rndBuckets
+}
+
+func generateRandomElems(number int) (rndElems []crdt.Element) {
+	rndElems = make([]crdt.Element, number)
+	for i := 0; i < number; i++ {
+		rndElems[i] = crdt.Element(fmt.Sprint(rand.Int()))
+	}
+	return rndElems
 }
 
 //Note: For now this only knows how to print sets.
