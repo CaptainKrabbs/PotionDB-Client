@@ -8,6 +8,7 @@ import (
 	rand "math/rand"
 	"net"
 	"os"
+	"sort"
 	"time"
 	"tools"
 
@@ -15,11 +16,12 @@ import (
 )
 
 const (
-	bucket      = "bkt"
-	maxId       = 50000000
-	maxValue    = 50
-	targetTrans = 10000
-	//targetTrans = 10
+	testCrdtType = antidote.CRDTType_LWWREG
+	bucket       = "bkt"
+	maxId        = 20
+	maxValue     = 2000
+	targetTrans  = 20000
+	//targetTrans = 30
 	//writeProb = 0
 	writeProb = 0.7
 	//writeProb      = 1
@@ -27,23 +29,30 @@ const (
 	minOpsPerTrans = 3
 	maxOpsPerTrans = 10
 	//maxOpsPerTrans = 4
-	maxSleepTime      = 100
-	nClients          = 4
-	beforeStartSleep  = 2000
-	sleepBeforeVerify = 4000
+	maxSleepTime = 50
+	//maxSleepTime = 800
+	nClients = 2
+	//nClients         = 1
+	beforeStartSleep = 2000
+	//sleepBeforeVerify = 4000
+	//Use smaller values only for single replica debugging
+	//sleepBeforeVerify = 500
+	sleepBeforeVerify = 6000
+	isMax             = crdt.IS_MAX //Used for MaxMinCRDT
 )
 
 var (
-	//keys = [1]string{"topk1"}
-	keys = []string{"topk1", "topk2"}
+	keys = []string{"topk1"}
+	//keys = []string{"topk1", "topk2"}
 	//keys = [4]string{"counter1", "counter2", "counter3", "counter4"}
 	//buckets = [2][]byte{[]byte("bkt1"), []byte("bkt2")}
-	buckets = []string{"bkt1", "bkt2"}
-	//buckets = [1]string{"bkt"}
-	elems = []string{"a", "b", "c", "d", "e"}
-	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
-	servers = []string{"127.0.0.1:8087"}
-	reader  = bufio.NewReader(os.Stdin)
+	//buckets = []string{"bkt", "bkt1", "bkt2"}
+	buckets = []string{"bkt"}
+	elems   = []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	mapKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
+	servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
+	//servers = []string{"127.0.0.1:8087"}
+	reader = bufio.NewReader(os.Stdin)
 )
 
 /*
@@ -54,11 +63,12 @@ Give some random (but low) delay between transactions. Repeat if they get aborte
 func main() {
 	//connection, err := net.Dial("tcp", "127.0.0.1:8087")
 	//tools.CheckErr("Network connection establishment err", err)
-	/*
-		rand.Seed(time.Now().UTC().UnixNano())
-		//transactionCycle(connection)
 
-		//for i := 0; i < 1; i++ {
+	rand.Seed(time.Now().UTC().UnixNano())
+	//transactionCycle(connection)
+
+	//for i := 0; i < 1; i++ {
+	/*
 		for i := 0; i < nClients; i++ {
 			conn, err := net.Dial("tcp", servers[i%len(servers)])
 			tools.CheckErr("Network connection establishment err", err)
@@ -67,6 +77,7 @@ func main() {
 		fmt.Println("Click enter once transactions stop happening.")
 		reader.ReadString('\n')
 	*/
+
 	benchmark()
 	//testSet(connection)
 	//testStaticUpdate(connection)
@@ -74,7 +85,6 @@ func main() {
 	//testStaticRead(connection, antidote.CRDTType_COUNTER, 10)
 }
 
-//TODO: Test this and testStaticUpdate() with antidote
 func testStaticRead(connection net.Conn, crdtType antidote.CRDTType, nReads int) (receivedProto proto.Message) {
 	reads := createReadObjectParams(crdtType, nReads)
 	proto := antidote.CreateStaticReadObjs(reads)
@@ -262,7 +272,7 @@ func transactionCycle(id int, connection net.Conn) {
 	connection.Close()
 
 	if id == 0 {
-		verifyReplication()
+		verifyReplication(testCrdtType)
 	}
 }
 
@@ -338,7 +348,7 @@ func createAndSendOps(connection net.Conn, transId []byte) {
 		//reader.ReadString('\n')
 		antidote.SendProto(protoType, opProto, connection)
 		//fmt.Println("Receiving proto op")
-		//_, replyProto, _ := antidote.ReceiveProto(connection)
+		//replyType, replyProto, _ := antidote.ReceiveProto(connection)
 		replyType, _, _ := antidote.ReceiveProto(connection)
 		if replyType == antidote.ErrorReply {
 			fmt.Println("Received ApbErrorResp!")
@@ -354,10 +364,10 @@ func getNextOp(transId []byte) (protoType byte, protoBuf proto.Message) {
 	key := keys[rand.Intn(len(keys))]
 	if rand.Float32() < writeProb {
 		//fmt.Println("Next proto is a write.")
-		protoType, protoBuf = antidote.UpdateObjs, getNextWrite(transId, key, antidote.CRDTType_ORSET)
+		protoType, protoBuf = antidote.UpdateObjs, getNextWrite(transId, key, testCrdtType)
 	} else {
 		//fmt.Println("Next proto is a read.")
-		protoType, protoBuf = antidote.ReadObjs, getNextRead(transId, key, antidote.CRDTType_ORSET)
+		protoType, protoBuf = antidote.ReadObjs, getNextRead(transId, key, testCrdtType)
 	}
 	if protoBuf == nil {
 		fmt.Println("Warning - nil protoBuf on getNextOp!")
@@ -366,26 +376,49 @@ func getNextOp(transId []byte) (protoType byte, protoBuf proto.Message) {
 }
 
 func getNextWrite(transId []byte, key string, crdtType antidote.CRDTType) (updateBuf *antidote.ApbUpdateObjects) {
+	var writeBuf proto.Message
 	switch crdtType {
 	case antidote.CRDTType_TOPK:
+		writeBuf = antidote.CreateTopkUpdate(rand.Intn(maxId), rand.Intn(maxValue))
+
+	case antidote.CRDTType_TOPK_RMV:
 		rndPlayer, rndValue := rand.Intn(maxId), rand.Intn(maxValue)
-		//rndPlayer, rndValue := 1, 887
-		topkWrite := antidote.CreateTopkUpdate(rndPlayer, rndValue)
-		updateBuf = antidote.CreateUpdateObjs(transId, key, antidote.CRDTType_TOPK, bucket, topkWrite)
-		//updateBuf = antidote.CreateUpdateObjs(transId, "topk1", antidote.CRDTType_TOPK, "bkt", topkWrite)
-		//fmt.Println("Write transId:", updateBuf.GetTransactionDescriptor())
-		//fmt.Println("Values sent:", rndPlayer, rndValue)
+		isAdd := rand.Float32() < 0.5
+		writeBuf = antidote.CreateTopKRmvUpdate(isAdd, rndPlayer, rndValue)
+
 	case antidote.CRDTType_ORSET:
 		rndElem := elems[rand.Intn(len(elems))]
-		var setWrite *antidote.ApbSetUpdate
 		if rand.Float32() < 0.5 {
-			setWrite = antidote.CreateSetUpdate(antidote.ApbSetUpdate_ADD, []string{rndElem})
+			writeBuf = antidote.CreateSetUpdate(antidote.ApbSetUpdate_ADD, []string{rndElem})
 		} else {
-			setWrite = antidote.CreateSetUpdate(antidote.ApbSetUpdate_REMOVE, []string{rndElem})
+			writeBuf = antidote.CreateSetUpdate(antidote.ApbSetUpdate_REMOVE, []string{rndElem})
 		}
-		updateBuf = antidote.CreateUpdateObjs(transId, key, antidote.CRDTType_ORSET, bucket, setWrite)
+
+	case antidote.CRDTType_COUNTER:
+		//Negative inc as dec
+		writeBuf = antidote.CreateCounterUpdate(rand.Intn(maxValue*2) - maxValue)
+
+	case antidote.CRDTType_LWWREG:
+		writeBuf = antidote.CreateRegisterUpdate(fmt.Sprint(rand.Intn(maxValue)))
+
+	case antidote.CRDTType_RRMAP:
+		key := mapKeys[rand.Intn(len(mapKeys))]
+		value := crdt.Element(elems[rand.Intn(len(elems))])
+		isAdd := rand.Float32() < 0.5
+		if isAdd {
+			writeBuf = antidote.CreateMapUpdate(isAdd, map[string]crdt.Element{key: value}, nil)
+		} else {
+			writeBuf = antidote.CreateMapUpdate(isAdd, nil, map[string]struct{}{key: struct{}{}})
+		}
+
+	case antidote.CRDTType_AVG:
+		writeBuf = antidote.CreateAvgUpdate(rand.Int63n(maxValue), 1)
+
+	case antidote.CRDTType_MAXMIN:
+		writeBuf = antidote.CreateMaxMinUpdate(rand.Int63n(maxValue), isMax)
 	}
-	return
+
+	return antidote.CreateUpdateObjs(transId, key, crdtType, bucket, writeBuf)
 }
 
 func getNextRead(transId []byte, key string, crdtType antidote.CRDTType) (readBuf *antidote.ApbReadObjects) {
@@ -393,54 +426,31 @@ func getNextRead(transId []byte, key string, crdtType antidote.CRDTType) (readBu
 }
 
 func createRead(transId []byte, key string, crdtType antidote.CRDTType) (readBuf *antidote.ApbReadObjects) {
-	//fmt.Println("Creating read")
-	readBuf = antidote.CreateReadObjs(transId, key, crdtType, bucket)
-	//fmt.Println("Read transId:", readBuf.GetTransactionDescriptor())
-	return
+	return antidote.CreateReadObjs(transId, key, crdtType, bucket)
 }
 
 func createCounterWrite(transId []byte, key string) (updateBuf *antidote.ApbUpdateObjects) {
-	//fmt.Println("Creating write")
-	write := antidote.CreateCounterUpdate(5)
-	updateBuf = antidote.CreateUpdateObjs(transId, key, antidote.CRDTType_COUNTER, bucket, write)
-	//fmt.Println("Write transId:", updateBuf.GetTransactionDescriptor())
-	return
+	return antidote.CreateUpdateObjs(transId, key, antidote.CRDTType_COUNTER, bucket, antidote.CreateCounterUpdate(5))
 }
 
 func getRandomLocationParams() (key string, bucket string) {
-	key, bucket = keys[rand.Intn(len(keys))], buckets[rand.Intn(len(buckets))]
-	return
+	return keys[rand.Intn(len(keys))], buckets[rand.Intn(len(buckets))]
 }
 
 //For every key combination, checks if all servers have the same results.
 //Only works for sets as of now.
 //TODO: Divide this in submethods
-func verifyReplication() {
-	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
-	//Change the "1" when we start supporting multiple crdt types
-	nObjects := len(keys) * len(buckets) * 1
+func verifyReplication(crdtType antidote.CRDTType) {
 	//Wait for replication
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
+	fmt.Println("Verifying convergence...")
+	//Change the "1" when we start supporting multiple crdt types
+	nObjects := len(keys) * len(buckets) * 1
 	//server (serverID) -> bucket -> key -> crdtType?
 	//results := make(map[int]map[string]map[string]map[antidote.CRDTType]crdt.State)
 	//results := make([]crdt.State, 0, nObjects)
 	results := make(map[int][]crdt.State)
 	//orderedRequests := make([]antidote.KeyParams, nObjects)
-
-	//Prepare the results map
-	/*
-		for serverID, _ := range servers {
-			bucketMap := make(map[string]map[string]map[antidote.CRDTType]crdt.State)
-			for _, bucket := range buckets {
-				keyMap := make(map[string]map[antidote.CRDTType]crdt.State)
-				for _, key := range keys {
-					keyMap[key] = make(map[antidote.CRDTType]crdt.State)
-				}
-				bucketMap[bucket] = keyMap
-			}
-			results[serverID] = bucketMap
-		}
-	*/
 
 	//Send query and obtain results
 	for serverID, serverString := range servers {
@@ -451,30 +461,32 @@ func verifyReplication() {
 		readParams := make([]antidote.ReadObjectParams, 0, nObjects)
 		for _, bucket := range buckets {
 			for _, key := range keys {
-				readParams = append(readParams, antidote.ReadObjectParams{KeyParams: antidote.CreateKeyParams(key, antidote.CRDTType_ORSET, bucket)})
+				readParams = append(readParams, antidote.ReadObjectParams{KeyParams: antidote.CreateKeyParams(key, crdtType, bucket)})
 			}
 		}
+		fmt.Println("Requesting read for:", readParams)
 		proto := antidote.CreateStaticReadObjs(readParams)
 		antidote.SendProto(antidote.StaticReadObjs, proto, conn)
 
 		//Receiving reply and decoding it
 		_, reply, _ := antidote.ReceiveProto(conn)
 		typedReply := reply.(*antidote.ApbStaticReadObjectsResp)
-		serverResults := results[serverID]
+		fmt.Println("Received proto reply with objects:", typedReply.GetObjects())
 		for _, objProto := range typedReply.GetObjects().GetObjects() {
-			//TODO: Take in consideration the CRDT type here
-			allObjsBytes := objProto.GetSet().GetValue()
-			setState := crdt.SetAWValueState{Elems: make([]crdt.Element, len(allObjsBytes))}
-			//Convert byte[][] back to strings
-			for i, objBytes := range allObjsBytes {
-				setState.Elems[i] = crdt.Element(objBytes)
-			}
-			serverResults = append(serverResults, setState)
+			results[serverID] = append(results[serverID], antidote.ConvertProtoObjectToAntidoteState(objProto, crdtType))
 		}
-		//func CreateStaticReadObjs(readParams []ReadObjectParams) (protobuf *ApbStaticReadObjects)
+		fmt.Println("")
 	}
 
-	ok := true
+	//Print reads
+	for i, _ := range results[0] {
+		fmt.Printf("Object %d states: \n", i)
+		for serverId, results := range results {
+			fmt.Printf("\tServer%d: %s\n", serverId, tools.StateToString(results[i]))
+		}
+	}
+
+	ok, reason := true, ""
 	//Compare the results
 	firstServerResults := results[0]
 	//First compare if all arrays have the same length. If they don't, they aren't equal for sure.
@@ -489,25 +501,13 @@ func verifyReplication() {
 		return
 	}
 	//Now compare each object
-	for i := 1; i < len(results) && !ok; i++ {
+	for i := 1; i < len(results) && ok; i++ {
 		for j, state := range firstServerResults {
-			//TODO: Consider CRDT types
-			otherState := results[i][j]
-			setState := state.(crdt.SetAWValueState)
-			otherSetState := otherState.(crdt.SetAWValueState)
-			if len(setState.Elems) != len(otherSetState.Elems) {
-				fmt.Println("Results don't match - number of elements in one of the set states is different")
-				ok = false
-				break
-			}
-			for k, elem := range setState.Elems {
-				if otherSetState.Elems[k] != elem {
-					fmt.Println("Results don't match - different elements in one of the set states!")
-					ok = false
-					break
-				}
-			}
+			fmt.Println("Checking equality")
+			ok, reason = checkStatesEquality(state, results[i][j])
 			if !ok {
+				fmt.Println("States not equal.")
+				fmt.Println(reason)
 				break
 			}
 		}
@@ -517,9 +517,125 @@ func verifyReplication() {
 	}
 }
 
+func checkStatesEquality(firstState crdt.State, secondState crdt.State) (ok bool, reason string) {
+	firstType := fmt.Sprintf("%T", firstState)
+	secondType := fmt.Sprintf("%T", secondState)
+	fmt.Printf("Types: %s, %s.\n", firstType, secondType)
+	if firstType != secondType {
+		return false, "Results don't match - different CRDT/state types!"
+	}
+
+	ok, reason = false, "Unsupported CRDT type - can't compare states"
+	switch typedFirstState := firstState.(type) {
+	case crdt.CounterState:
+		ok, reason = checkCounterStatesEquality(typedFirstState, secondState.(crdt.CounterState))
+	case crdt.RegisterState:
+		ok, reason = checkRegisterStatesEquality(typedFirstState, secondState.(crdt.RegisterState))
+	case crdt.SetAWValueState:
+		ok, reason = checkSetStatesEquality(typedFirstState, secondState.(crdt.SetAWValueState))
+	case crdt.SetAWLookupState:
+		ok, reason = checkSetLookupStatesEquality(typedFirstState, secondState.(crdt.SetAWLookupState))
+	case crdt.MapEntryState:
+		ok, reason = checkMapStatesEquality(typedFirstState, secondState.(crdt.MapEntryState))
+	case crdt.MapKeysState:
+		ok, reason = checkMapKeysStatesEquality(typedFirstState, secondState.(crdt.MapKeysState))
+	case crdt.MapHasKeyState:
+		ok, reason = checkMapHasKeyStatesEquality(typedFirstState, secondState.(crdt.MapHasKeyState))
+	case crdt.MapGetValueState:
+		ok, reason = checkMapGetValueStatesEquality(typedFirstState, secondState.(crdt.MapGetValueState))
+	case crdt.TopKValueState:
+		ok, reason = checkTopKStatesEquality(typedFirstState, secondState.(crdt.TopKValueState))
+	case crdt.AvgState:
+		ok, reason = checkAvgStatesEquality(typedFirstState, secondState.(crdt.AvgState))
+	case crdt.MaxMinState:
+		ok, reason = checkMaxMinStatesEquality(typedFirstState, secondState.(crdt.MaxMinState))
+	}
+	return ok, ""
+}
+
+func checkCounterStatesEquality(firstState crdt.CounterState, secondState crdt.CounterState) (ok bool, reason string) {
+	return firstState.Value == secondState.Value, "Different counter values!"
+}
+
+func checkRegisterStatesEquality(firstState crdt.RegisterState, secondState crdt.RegisterState) (ok bool, reason string) {
+	return firstState.Value == secondState.Value, "Different register values!"
+}
+
+func checkSetStatesEquality(firstState crdt.SetAWValueState, secondState crdt.SetAWValueState) (ok bool, reason string) {
+	if len(firstState.Elems) != len(secondState.Elems) {
+		return false, "Results don't match - number of elements in one of the set states is different!"
+	}
+	sort.Slice(firstState.Elems, func(i, j int) bool { return firstState.Elems[i] < firstState.Elems[j] })
+	sort.Slice(secondState.Elems, func(i, j int) bool { return secondState.Elems[i] < secondState.Elems[j] })
+	for i, elem := range firstState.Elems {
+		if secondState.Elems[i] != elem {
+			return false, "Results don't match - different elements in one of the set states!"
+		}
+	}
+	return true, ""
+}
+
+func checkSetLookupStatesEquality(firstState crdt.SetAWLookupState, secondState crdt.SetAWLookupState) (ok bool, reason string) {
+	return firstState.HasElem == secondState.HasElem, "Different lookup results!"
+}
+
+func checkMapStatesEquality(firstState crdt.MapEntryState, secondState crdt.MapEntryState) (ok bool, reason string) {
+	if len(firstState.Values) != len(secondState.Values) {
+		return false, "Results don't match - number of keys in one of the Map states is different!"
+	}
+	for key, elem := range firstState.Values {
+		if otherElem, has := secondState.Values[key]; !has || elem != otherElem {
+			return false, "Results don't match - missing a key or its element is different!"
+		}
+	}
+	return true, ""
+}
+
+func checkMapKeysStatesEquality(firstState crdt.MapKeysState, secondState crdt.MapKeysState) (ok bool, reason string) {
+	if len(firstState.Keys) != len(secondState.Keys) {
+		return false, "Results don't match - number of keys in one of the Map states is different!"
+	}
+	for i, key := range firstState.Keys {
+		if secondState.Keys[i] != key {
+			return false, "Results don't match - missing a key!"
+		}
+	}
+	return true, ""
+}
+
+func checkMapHasKeyStatesEquality(firstState crdt.MapHasKeyState, secondState crdt.MapHasKeyState) (ok bool, reason string) {
+	return firstState.HasKey == secondState.HasKey, "Different hasKey results!"
+}
+
+func checkMapGetValueStatesEquality(firstState crdt.MapGetValueState, secondState crdt.MapGetValueState) (ok bool, reason string) {
+	return firstState.Value == secondState.Value, "Different elements for the same key!"
+}
+
+func checkTopKStatesEquality(firstState crdt.TopKValueState, secondState crdt.TopKValueState) (ok bool, reason string) {
+	if len(firstState.Scores) != len(secondState.Scores) {
+		return false, "Results don't match - number of scores in one of the TopKRmv states is different!"
+	}
+	sort.Slice(firstState.Scores, func(i, j int) bool { return firstState.Scores[i].Id < firstState.Scores[j].Id })
+	sort.Slice(secondState.Scores, func(i, j int) bool { return secondState.Scores[i].Id < secondState.Scores[j].Id })
+	for i, pair := range firstState.Scores {
+		if secondState.Scores[i] != pair {
+			return false, "Resulds don't match - different scores in one of the TopKRmv states!"
+		}
+	}
+	return true, ""
+}
+
+func checkAvgStatesEquality(firstState crdt.AvgState, secondState crdt.AvgState) (ok bool, reason string) {
+	return firstState.Value == secondState.Value, "Different averages!"
+}
+
+func checkMaxMinStatesEquality(firstState crdt.MaxMinState, secondState crdt.MaxMinState) (ok bool, reason string) {
+	return firstState.Value == secondState.Value, "Different max/min!"
+}
+
 func benchmark() {
 	keys = generateRandomKeys(10)
-	buckets = generateRandomBuckets(10)
+	buckets = generateRandomBuckets(1)
 	elems := generateRandomElems(100)
 
 	rand.Seed(0)
@@ -530,8 +646,8 @@ func benchmark() {
 	for i := 0; i < nClients; i++ {
 		conn, err := net.Dial("tcp", servers[i%len(servers)])
 		tools.CheckErr("Network connection establishment err", err)
-		go executeStaticBenchmark(i, conn, elems, nOpsRange, finishChan)
-		//go executeNonStaticBenchmark(i, conn, elems, nOpsRange, finishChan)
+		go executeStaticBenchmark(i, conn, keys, elems, nOpsRange, finishChan)
+		//go executeNonStaticBenchmark(i, conn, keys, elems, nOpsRange, finishChan)
 	}
 
 	for i := 0; i < nClients; i++ {
@@ -547,9 +663,10 @@ func benchmark() {
 	fmt.Println("Txns/s (per client):", targetTrans*1000/estimatedTime)
 }
 
-func executeNonStaticBenchmark(clientID int, connection net.Conn, elements []crdt.Element, nOpsRange int, finishChan chan int64) {
+func executeNonStaticBenchmark(clientID int, connection net.Conn, keys []string, elements []crdt.Element, nOpsRange int, finishChan chan int64) {
 	startTime := time.Now().UTC().UnixNano()
 	var previousTs []byte = nil
+	var updArgs []crdt.UpdateArguments
 	for nDone := 0; nDone < targetTrans; nDone += 1 {
 		//Start txn
 		antidote.SendProto(antidote.StartTrans, antidote.CreateStartTransaction(previousTs), connection)
@@ -562,12 +679,27 @@ func executeNonStaticBenchmark(clientID int, connection net.Conn, elements []crd
 		nReads := nOps - nWrites
 
 		if nWrites > 0 {
-			updArgs := getRandomSetUpdateArgs(nWrites, elements)
-			testGenericUpdate(connection, previousTs, antidote.CRDTType_ORSET, updArgs)
+			switch testCrdtType {
+			case antidote.CRDTType_COUNTER:
+				updArgs = getRandomCounterUpdateArgs(nWrites)
+			case antidote.CRDTType_LWWREG:
+				updArgs = getRandomRegisterUpdateArgs(nWrites)
+			case antidote.CRDTType_ORSET:
+				updArgs = getRandomSetUpdateArgs(nWrites, elements)
+			case antidote.CRDTType_RRMAP:
+				updArgs = getRandomMapUpdateArgs(nWrites, keys, elements)
+			case antidote.CRDTType_TOPK_RMV:
+				updArgs = getRandomTopKRmvUpdateArgs(nWrites)
+			case antidote.CRDTType_AVG:
+				updArgs = getRandomAvgUpdateArgs(nWrites)
+			case antidote.CRDTType_MAXMIN:
+				updArgs = getRandomMaxMinUpdateArgs(nWrites)
+			}
+			testGenericUpdate(connection, previousTs, testCrdtType, updArgs)
 		}
 		if nReads > 0 {
 			//fmt.Printf("Client %d preparing read.\n", clientID)
-			testRead(connection, previousTs, antidote.CRDTType_ORSET, nReads)
+			testRead(connection, previousTs, testCrdtType, nReads)
 		}
 		//fmt.Printf("Client %d finished processing txn %d.\n", clientID, nDone)
 		//Send commit, wait for reply and continue
@@ -586,13 +718,14 @@ func executeNonStaticBenchmark(clientID int, connection net.Conn, elements []crd
 	}
 	totalTime := time.Now().UTC().UnixNano() - startTime
 	if clientID == 0 {
-		verifyReplication()
+		verifyReplication(testCrdtType)
 	}
 	finishChan <- totalTime
 }
 
-func executeStaticBenchmark(clientID int, connection net.Conn, elements []crdt.Element, nOpsRange int, finishChan chan int64) {
+func executeStaticBenchmark(clientID int, connection net.Conn, keys []string, elements []crdt.Element, nOpsRange int, finishChan chan int64) {
 	startTime := time.Now().UTC().UnixNano()
+	var updArgs []crdt.UpdateArguments
 	for nDone := 0; nDone < targetTrans; nDone += 1 {
 
 		nOps := rand.Intn(nOpsRange) + minOpsPerTrans
@@ -600,13 +733,32 @@ func executeStaticBenchmark(clientID int, connection net.Conn, elements []crdt.E
 		nReads := nOps - nWrites
 
 		if nWrites > 0 {
-			updArgs := getRandomSetUpdateArgs(nWrites, elements)
-			testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, updArgs)
+			switch testCrdtType {
+			case antidote.CRDTType_COUNTER:
+				updArgs = getRandomCounterUpdateArgs(nWrites)
+			case antidote.CRDTType_LWWREG:
+				updArgs = getRandomRegisterUpdateArgs(nWrites)
+			case antidote.CRDTType_ORSET:
+				updArgs = getRandomSetUpdateArgs(nWrites, elements)
+			case antidote.CRDTType_RRMAP:
+				updArgs = getRandomMapUpdateArgs(nWrites, keys, elements)
+			case antidote.CRDTType_TOPK_RMV:
+				updArgs = getRandomTopKRmvUpdateArgs(nWrites)
+			case antidote.CRDTType_AVG:
+				updArgs = getRandomAvgUpdateArgs(nWrites)
+			case antidote.CRDTType_MAXMIN:
+				updArgs = getRandomMaxMinUpdateArgs(nWrites)
+			}
+			//fmt.Println(clientID, "Update")
+			testGenericStaticUpdate(connection, testCrdtType, updArgs)
+			//fmt.Println(clientID, "Finish update")
 			//Send writes
 		}
 
 		if nReads > 0 {
-			testStaticRead(connection, antidote.CRDTType_ORSET, nReads)
+			//fmt.Println(clientID, "Read")
+			testStaticRead(connection, testCrdtType, nReads)
+			//fmt.Println(clientID, "Finish read")
 		}
 		//fmt.Printf("Client %d finished processing txn %d.\n", clientID, nDone)
 		if (nDone+1)%(targetTrans/10) == 0 {
@@ -615,18 +767,84 @@ func executeStaticBenchmark(clientID int, connection net.Conn, elements []crdt.E
 	}
 	totalTime := time.Now().UTC().UnixNano() - startTime
 	if clientID == 0 {
-		verifyReplication()
+		verifyReplication(testCrdtType)
 	}
 	finishChan <- totalTime
 }
 
+func getRandomCounterUpdateArgs(nWrites int) (updArgs []crdt.UpdateArguments) {
+	updArgs = make([]crdt.UpdateArguments, nWrites)
+	for i := 0; i < nWrites; i++ {
+		updArgs[i] = crdt.Increment{Change: rand.Int31n(maxValue*2) - maxValue}
+	}
+	return
+}
+
+func getRandomRegisterUpdateArgs(nWrites int) (updArgs []crdt.UpdateArguments) {
+	updArgs = make([]crdt.UpdateArguments, nWrites)
+	for i := 0; i < nWrites; i++ {
+		updArgs[i] = crdt.SetValue{NewValue: string(rand.Int31n(maxValue))}
+	}
+	return
+}
+
 func getRandomSetUpdateArgs(nWrites int, elements []crdt.Element) (updArgs []crdt.UpdateArguments) {
 	updArgs = make([]crdt.UpdateArguments, nWrites)
-	for i := 0; i < len(updArgs); i++ {
+	for i := 0; i < nWrites; i++ {
 		if rand.Float64() < addProb {
-			updArgs[i] = crdt.Add{Element: elements[rand.Intn(100)]}
+			updArgs[i] = crdt.Add{Element: elements[rand.Intn(len(elements))]}
 		} else {
-			updArgs[i] = crdt.Remove{Element: elements[rand.Intn(100)]}
+			updArgs[i] = crdt.Remove{Element: elements[rand.Intn(len(elements))]}
+		}
+	}
+	return
+}
+
+func getRandomMapUpdateArgs(nWrites int, keys []string, elements []crdt.Element) (updArgs []crdt.UpdateArguments) {
+	updArgs = make([]crdt.UpdateArguments, nWrites)
+	for i := 0; i < nWrites; i++ {
+		if rand.Float64() < addProb {
+			updArgs[i] = crdt.MapAdd{Key: keys[rand.Intn(len(keys))], Value: elements[rand.Intn(len(elements))]}
+		} else {
+			updArgs[i] = crdt.MapRemove{Key: keys[rand.Intn(len(keys))]}
+		}
+	}
+	return
+}
+
+func getRandomTopKRmvUpdateArgs(nWrites int) (updArgs []crdt.UpdateArguments) {
+	updArgs = make([]crdt.UpdateArguments, nWrites)
+	var id, value int32
+	for i := 0; i < nWrites; i++ {
+		id = rand.Int31n(maxId)
+		if rand.Float64() < addProb {
+			value = rand.Int31n(maxValue)
+			updArgs[i] = crdt.TopKAdd{TopKScore: crdt.TopKScore{Id: id, Score: value}}
+		} else {
+			updArgs[i] = crdt.TopKRemove{Id: id}
+		}
+	}
+	return
+}
+
+func getRandomAvgUpdateArgs(nWrites int) (updArgs []crdt.UpdateArguments) {
+	updArgs = make([]crdt.UpdateArguments, nWrites)
+	for i := 0; i < nWrites; i++ {
+		updArgs[i] = crdt.AddValue{Value: rand.Int63n(maxValue)}
+	}
+	return
+}
+
+func getRandomMaxMinUpdateArgs(nWrites int) (updArgs []crdt.UpdateArguments) {
+	updArgs = make([]crdt.UpdateArguments, nWrites)
+	//Code repetition on purpose, for efficiency.
+	if isMax {
+		for i := 0; i < nWrites; i++ {
+			updArgs[i] = crdt.MaxAddValue{Value: rand.Int63n(maxValue)}
+		}
+	} else {
+		for i := 0; i < nWrites; i++ {
+			updArgs[i] = crdt.MinAddValue{Value: rand.Int63n(maxValue)}
 		}
 	}
 	return
@@ -635,23 +853,19 @@ func getRandomSetUpdateArgs(nWrites int, elements []crdt.Element) (updArgs []crd
 func generateRandomKeys(number int) (rndKeys []string) {
 	rndKeys = make([]string, number)
 	for i := 0; i < number; i++ {
-		rndKeys[i] = fmt.Sprint(rand.Int())
+		rndKeys[i] = fmt.Sprint(rand.Intn(1000))
 	}
 	return rndKeys
 }
 
 func generateRandomBuckets(number int) (rndBuckets []string) {
-	rndBuckets = make([]string, number)
-	for i := 0; i < number; i++ {
-		rndBuckets[i] = fmt.Sprint(rand.Int())
-	}
-	return rndBuckets
+	return generateRandomKeys(number)
 }
 
 func generateRandomElems(number int) (rndElems []crdt.Element) {
 	rndElems = make([]crdt.Element, number)
 	for i := 0; i < number; i++ {
-		rndElems[i] = crdt.Element(fmt.Sprint(rand.Int()))
+		rndElems[i] = crdt.Element(fmt.Sprint(rand.Intn(1000)))
 	}
 	return rndElems
 }
