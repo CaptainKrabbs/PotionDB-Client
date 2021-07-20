@@ -1,19 +1,21 @@
 package main
 
 import (
-	"antidote"
 	"bufio"
-	"crdt"
 	"fmt"
 	"math"
 	rand "math/rand"
 	"net"
 	"os"
+	"potionDB/src/antidote"
+	"potionDB/src/crdt"
+	"potionDB/src/proto"
+	"potionDB/src/tools"
+	"potionDB_client/src/clientLib"
 	"sort"
 	"time"
-	"tools"
 
-	proto "github.com/golang/protobuf/proto"
+	pb "github.com/golang/protobuf/proto"
 )
 
 type BenchmarkArgs struct {
@@ -22,15 +24,13 @@ type BenchmarkArgs struct {
 
 	elements  []crdt.Element
 	keys      []string
-	crdtTypes []antidote.CRDTType
+	crdtTypes []proto.CRDTType
 }
 
 const (
-	//testCrdtType = antidote.CRDTType_TOPK_RMV
-	testCrdtType = antidote.CRDTType_RRMAP
-	bucket       = "bkt"
-	maxId        = 20
-	maxValue     = 2000
+	bucket   = "bkt"
+	maxId    = 20
+	maxValue = 2000
 	//targetTrans  = 2000
 	targetTrans = 50
 	//targetTrans = 1
@@ -38,25 +38,27 @@ const (
 	//writeProb = 0.7
 	writeProb      = 1
 	addProb        = 0.5
-	rrMapAddProb   = 0.85
+	rrMapAddProb   = 1
 	minOpsPerTrans = 3
 	maxOpsPerTrans = 10
 	//maxOpsPerTrans = 4
 	maxSleepTime = 300
-	//maxSleepTime = 800
+	//maxSleepTime = 50
 	nClients = 4
 	//nClients         = 1
 	beforeStartSleep = 2000
 	//sleepBeforeVerify = 4000
 	//Use smaller values only for single replica debugging
-	//sleepBeforeVerify = 500
+	//sleepBeforeVerify = 2000
 	sleepBeforeVerify = 10000
 	isMax             = crdt.IS_MAX //Used for MaxMinCRDT
 	maxEmbUpdates     = 5           //Max number of embedded CRDTs to be updated/removed
 )
 
 var (
-	keys = []string{"topk1"}
+	//testCrdtType = proto.CRDTType_TOPK_RMV
+	testCrdtType = proto.CRDTType_RRMAP
+	keys         = []string{"topk1"}
 	//keys = []string{"topk1", "topk2"}
 	//keys = [4]string{"counter1", "counter2", "counter3", "counter4"}
 	//buckets = [2][]byte{[]byte("bkt1"), []byte("bkt2")}
@@ -65,11 +67,11 @@ var (
 	elems   = []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 	//mapKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
 	mapKeys = []string{"1", "2", "3", "4"}
-	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
-	servers  = []string{"127.0.0.1:8087"}
-	embTypes = []antidote.CRDTType{antidote.CRDTType_TOPK_RMV,
-		antidote.CRDTType_ORSET, antidote.CRDTType_MAXMIN}
-	//embTypes = []antidote.CRDTType{antidote.CRDTType_LWWREG}
+	servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
+	//servers  = []string{"127.0.0.1:8087"}
+	embTypes = []proto.CRDTType{proto.CRDTType_TOPK_RMV,
+		proto.CRDTType_ORSET, proto.CRDTType_MAXMIN}
+	//embTypes = []antidote.CRDTType{proto.CRDTType_LWWREG}
 	reader = bufio.NewReader(os.Stdin)
 )
 
@@ -85,24 +87,59 @@ func main() {
 	rand.Seed(time.Now().UTC().UnixNano())
 	//transactionCycle(connection)
 
-	for i := 0; i < nClients; i++ {
-		conn, err := net.Dial("tcp", servers[i%len(servers)])
-		tools.CheckErr("Network connection establishment err", err)
-		go transactionCycle(i, conn)
-	}
+	/*
+		for i := 0; i < nClients; i++ {
+			conn, err := net.Dial("tcp", servers[i%len(servers)])
+			tools.CheckErr("Network connection establishment err", err)
+			go transactionCycle(i, conn)
+		}
+	*/
 	//fmt.Println("Click enter once transactions stop happening.")
 	//reader.ReadString('\n')
 
+	//listTypes := []proto.CRDTType{proto.CRDTType_COUNTER, proto.CRDTType_LWWREG, proto.CRDTType_ORSET,
+	//proto.CRDTType_ORMAP, proto.CRDTType_TOPK_RMV, proto.CRDTType_AVG, proto.CRDTType_MAXMIN}
+	//listTypes := []proto.CRDTType{proto.CRDTType_RRMAP}
+	/*
+		for _, crdtType := range listTypes {
+			testCrdtType = crdtType
+			fmt.Println("Testing", testCrdtType)
+			benchmark()
+		}
+	*/
 	//benchmark()
 	//testSet(connection)
 	//testStaticUpdate(connection)
 	//time.Sleep(time.Duration(1000) * time.Millisecond)
 	//testStaticRead(connection, antidote.CRDTType_COUNTER, 10)
 
+	conns := make([]net.Conn, len(servers))
+	for i := 0; i < len(servers); i++ {
+		conn, err := net.Dial("tcp", servers[i])
+		tools.CheckErr("Network connection establishment err", err)
+		conns[i] = conn
+	}
+
+	testRemoteOps(conns)
+
 	select {}
 }
 
-func testStaticRead(connection net.Conn, crdtType antidote.CRDTType, nReads int) (receivedProto proto.Message) {
+//Assumes a list of connections and two or more buckets
+func testRemoteOps(conns []net.Conn) {
+	txnId := clientLib.StartTxn(conns[0])
+
+	read := []antidote.ReadObjectParams{antidote.ReadObjectParams{
+		KeyParams: antidote.CreateKeyParams("key1", proto.CRDTType_COUNTER, "R1"),
+	}}
+	antidote.SendProto(antidote.ReadObjs, antidote.CreateReadObjs(txnId, read), conns[0])
+	antidote.ReceiveProto(conns[0])
+	fmt.Println("Read reply received")
+	clientLib.CommitTxn(conns[0], txnId)
+	fmt.Println("Commit finished")
+}
+
+func testStaticRead(connection net.Conn, crdtType proto.CRDTType, nReads int) (receivedProto pb.Message) {
 	reads := createReadObjectParams(crdtType, nReads)
 	proto := antidote.CreateStaticReadObjs(nil, reads)
 	antidote.SendProto(antidote.StaticReadObjs, proto, connection)
@@ -116,9 +153,9 @@ func testStaticRead(connection net.Conn, crdtType antidote.CRDTType, nReads int)
 	return
 }
 
-func testRead(connection net.Conn, transId []byte, crdtType antidote.CRDTType, nReads int) (receivedProto proto.Message) {
+func testRead(connection net.Conn, transId []byte, crdtType proto.CRDTType, nReads int) (receivedProto pb.Message) {
 	reads := createReadObjectParams(crdtType, nReads)
-	proto := antidote.CreateReadObjsFromArray(transId, reads)
+	proto := antidote.CreateReadObjs(transId, reads)
 	antidote.SendProto(antidote.ReadObjs, proto, connection)
 	//fmt.Println("Proto sent! Waiting for reply.")
 
@@ -130,7 +167,7 @@ func testRead(connection net.Conn, transId []byte, crdtType antidote.CRDTType, n
 	return
 }
 
-func createReadObjectParams(crdtType antidote.CRDTType, nReads int) (reads []antidote.ReadObjectParams) {
+func createReadObjectParams(crdtType proto.CRDTType, nReads int) (reads []antidote.ReadObjectParams) {
 	reads = make([]antidote.ReadObjectParams, nReads)
 	for i := 0; i < len(reads); i++ {
 		rndKey, rndBucket := getRandomLocationParams()
@@ -141,18 +178,18 @@ func createReadObjectParams(crdtType antidote.CRDTType, nReads int) (reads []ant
 	return
 }
 
-func testStaticUpdate(connection net.Conn) (receivedProto proto.Message) {
+func testStaticUpdate(connection net.Conn) (receivedProto pb.Message) {
 	updates := make([]antidote.UpdateObjectParams, 1)
 	inc := rand.Int31n(100)
 	rndKey, rndBucket := getRandomLocationParams()
 	fmt.Println("Incrementing with:", inc)
 	var upd crdt.UpdateArguments = crdt.Increment{Change: inc}
 	updates[0] = antidote.UpdateObjectParams{
-		KeyParams:  antidote.CreateKeyParams(rndKey, antidote.CRDTType_COUNTER, rndBucket),
+		KeyParams:  antidote.CreateKeyParams(rndKey, proto.CRDTType_COUNTER, rndBucket),
 		UpdateArgs: &upd,
 	}
 
-	proto := antidote.CreateStaticUpdateObjs(updates)
+	proto := antidote.CreateStaticUpdateObjs(nil, updates)
 	antidote.SendProto(antidote.StaticUpdateObjs, proto, connection)
 	fmt.Println("Proto sent! Waiting for reply.")
 
@@ -164,22 +201,25 @@ func testStaticUpdate(connection net.Conn) (receivedProto proto.Message) {
 }
 
 func testSet(connection net.Conn) {
+	fmt.Println("Testing set add")
 	adds := make([]crdt.UpdateArguments, 3)
 	for i := 0; i < len(adds); i++ {
 		adds[i] = crdt.Add{Element: crdt.Element(fmt.Sprint(rand.Uint64()))}
 	}
-	testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, adds)
+	testGenericStaticUpdate(connection, proto.CRDTType_ORSET, adds)
 
-	testStaticRead(connection, antidote.CRDTType_ORSET, 5)
+	testStaticRead(connection, proto.CRDTType_ORSET, 5)
 
+	fmt.Println("Testing set remove")
 	rems := make([]crdt.UpdateArguments, 6)
 	for i := 0; i < len(rems); i++ {
 		rems[i] = crdt.Remove{Element: crdt.Element(fmt.Sprint(rand.Uint64()))}
 	}
-	testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, rems)
+	testGenericStaticUpdate(connection, proto.CRDTType_ORSET, rems)
 
-	testStaticRead(connection, antidote.CRDTType_ORSET, 5)
+	testStaticRead(connection, proto.CRDTType_ORSET, 5)
 
+	fmt.Println("Testing set addAll")
 	addAll := make([]crdt.UpdateArguments, 1)
 	var rndElems []crdt.Element
 	for i := 0; i < len(addAll); i++ {
@@ -189,10 +229,11 @@ func testSet(connection net.Conn) {
 		}
 		addAll[i] = crdt.AddAll{Elems: rndElems}
 	}
-	testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, addAll)
+	testGenericStaticUpdate(connection, proto.CRDTType_ORSET, addAll)
 
-	testStaticRead(connection, antidote.CRDTType_ORSET, 5)
+	testStaticRead(connection, proto.CRDTType_ORSET, 5)
 
+	fmt.Println("Testing set remAll")
 	remAll := make([]crdt.UpdateArguments, 2)
 	for i := 0; i < len(remAll); i++ {
 		rndElems = make([]crdt.Element, 2)
@@ -201,14 +242,14 @@ func testSet(connection net.Conn) {
 		}
 		remAll[i] = crdt.RemoveAll{Elems: rndElems}
 	}
-	testGenericStaticUpdate(connection, antidote.CRDTType_ORSET, remAll)
+	testGenericStaticUpdate(connection, proto.CRDTType_ORSET, remAll)
 
-	testStaticRead(connection, antidote.CRDTType_ORSET, 5)
+	testStaticRead(connection, proto.CRDTType_ORSET, 5)
 }
 
-func testGenericStaticUpdate(connection net.Conn, crdtType antidote.CRDTType, args []crdt.UpdateArguments) {
+func testGenericStaticUpdate(connection net.Conn, crdtType proto.CRDTType, args []crdt.UpdateArguments) {
 	updates := createUpdateObjectParams(crdtType, args)
-	proto := antidote.CreateStaticUpdateObjs(updates)
+	proto := antidote.CreateStaticUpdateObjs(nil, updates)
 	antidote.SendProto(antidote.StaticUpdateObjs, proto, connection)
 	//fmt.Println("Proto update sent! Waiting for reply.")
 
@@ -218,9 +259,9 @@ func testGenericStaticUpdate(connection net.Conn, crdtType antidote.CRDTType, ar
 	//fmt.Println("Received type, proto: ", protoType, receivedProto)
 }
 
-func testGenericUpdate(connection net.Conn, transId []byte, crdtType antidote.CRDTType, args []crdt.UpdateArguments) {
+func testGenericUpdate(connection net.Conn, transId []byte, crdtType proto.CRDTType, args []crdt.UpdateArguments) {
 	updates := createUpdateObjectParams(crdtType, args)
-	proto := antidote.CreateUpdateObjsFromArray(transId, updates)
+	proto := antidote.CreateUpdateObjs(transId, updates)
 	antidote.SendProto(antidote.UpdateObjs, proto, connection)
 	//fmt.Println("Proto update sent! Waiting for reply.")
 
@@ -230,7 +271,7 @@ func testGenericUpdate(connection net.Conn, transId []byte, crdtType antidote.CR
 	//fmt.Println("Received type, proto: ", protoType, receivedProto)
 }
 
-func createUpdateObjectParams(crdtType antidote.CRDTType, args []crdt.UpdateArguments) (updates []antidote.UpdateObjectParams) {
+func createUpdateObjectParams(crdtType proto.CRDTType, args []crdt.UpdateArguments) (updates []antidote.UpdateObjectParams) {
 	updates = make([]antidote.UpdateObjectParams, len(args))
 	for i := 0; i < len(args); i++ {
 		rndKey, rndBucket := getRandomLocationParams()
@@ -256,7 +297,7 @@ func transactionCycle(id int, connection net.Conn) {
 
 		//Receive transaction ID
 		_, receivedProto, _ := antidote.ReceiveProto(connection)
-		startTransResp := receivedProto.(*antidote.ApbStartTransactionResp)
+		startTransResp := receivedProto.(*proto.ApbStartTransactionResp)
 		transId := startTransResp.GetTransactionDescriptor()
 
 		fmt.Println("Starting to send operations...")
@@ -268,7 +309,7 @@ func transactionCycle(id int, connection net.Conn) {
 
 		//Receive reply, check if it is commit or abort?
 		_, receivedProto, _ = antidote.ReceiveProto(connection)
-		commitReply := receivedProto.(*antidote.ApbCommitResp)
+		commitReply := receivedProto.(*proto.ApbCommitResp)
 		if !commitReply.GetSuccess() {
 			fmt.Println("Commit failed, retrying...")
 			nDone--
@@ -294,21 +335,22 @@ func transactionCycle(id int, connection net.Conn) {
 
 func debugWithCounter(connection net.Conn, transId []byte) {
 	counterKeys := [3]string{"counter1", "counter2", "counter3"}
-	protoType, writeProto := antidote.UpdateObjs, createCounterWrite(transId, counterKeys[0])
+	//protoType, writeProto := antidote.UpdateObjs, createCounterWrite(transId, counterKeys[0])
+	protoType, writeProto := antidote.UpdateObjs, getNextWrite(transId, counterKeys[0], proto.CRDTType_COUNTER)
 	fmt.Println("Sending write for", counterKeys[0])
 	//reader.ReadString('\n')
 	antidote.SendProto(byte(protoType), writeProto, connection)
 	replyType, replyProto, _ := antidote.ReceiveProto(connection)
 	fmt.Println("Reply type, proto:", replyType, replyProto)
 
-	protoType, readProto := antidote.ReadObjs, createRead(transId, counterKeys[0], antidote.CRDTType_COUNTER)
+	protoType, readProto := antidote.ReadObjs, createRead(transId, counterKeys[0], proto.CRDTType_COUNTER)
 	fmt.Println("Sending read for", counterKeys[0])
 	//reader.ReadString('\n')
 	antidote.SendProto(byte(protoType), readProto, connection)
 	replyType1, replyProto1, _ := antidote.ReceiveProto(connection)
 	fmt.Println("Reply type, proto:", replyType1, replyProto1)
 
-	protoType, readProto = antidote.ReadObjs, createRead(transId, counterKeys[1], antidote.CRDTType_COUNTER)
+	protoType, readProto = antidote.ReadObjs, createRead(transId, counterKeys[1], proto.CRDTType_COUNTER)
 	fmt.Println("Sending read for", counterKeys[1])
 	//reader.ReadString('\n')
 	antidote.SendProto(byte(protoType), readProto, connection)
@@ -319,7 +361,7 @@ func debugWithCounter(connection net.Conn, transId []byte) {
 
 func debugWithTopk(connection net.Conn, transId []byte) {
 
-	protoType, writeProto := antidote.UpdateObjs, getNextWrite(transId, keys[0], antidote.CRDTType_TOPK)
+	protoType, writeProto := antidote.UpdateObjs, getNextWrite(transId, keys[0], proto.CRDTType_TOPK)
 	fmt.Println("Sending write for", keys[0])
 	//reader.ReadString('\n')
 	antidote.SendProto(byte(protoType), writeProto, connection)
@@ -335,7 +377,7 @@ func debugWithTopk(connection net.Conn, transId []byte) {
 		fmt.Println("Reply type, proto:", replyType1, replyProto1)
 	*/
 
-	protoType, readProto := antidote.ReadObjs, getNextRead(transId, keys[0], antidote.CRDTType_TOPK)
+	protoType, readProto := antidote.ReadObjs, getNextRead(transId, keys[0], proto.CRDTType_TOPK)
 	fmt.Println("Sending read for", keys[0])
 	//reader.ReadString('\n')
 	antidote.SendProto(byte(protoType), readProto, connection)
@@ -376,7 +418,7 @@ func createAndSendOps(connection net.Conn, transId []byte) {
 	//fmt.Println("nOps done")
 }
 
-func getNextOp(transId []byte) (protoType byte, protoBuf proto.Message) {
+func getNextOp(transId []byte) (protoType byte, protoBuf pb.Message) {
 	key := keys[rand.Intn(len(keys))]
 	if rand.Float32() < writeProb {
 		//fmt.Println("Next proto is a write.")
@@ -391,50 +433,52 @@ func getNextOp(transId []byte) (protoType byte, protoBuf proto.Message) {
 	return
 }
 
-func getNextWrite(transId []byte, key string, crdtType antidote.CRDTType) (updateBuf *antidote.ApbUpdateObjects) {
+func getNextWrite(transId []byte, key string, crdtType proto.CRDTType) (updateBuf *proto.ApbUpdateObjects) {
 	fmt.Println("Generating ApbUpdateObjects for", crdtType.String())
-	var writeBuf proto.Message
+	var upd crdt.UpdateArguments
 	switch crdtType {
-	case antidote.CRDTType_TOPK:
-		writeBuf = antidote.CreateTopkUpdate(rand.Intn(maxId), rand.Intn(maxValue))
+	case proto.CRDTType_TOPK:
+		upd = crdt.TopKAdd{TopKScore: crdt.TopKScore{Id: rand.Int31n(maxId), Score: rand.Int31n(maxValue)}}
 
-	case antidote.CRDTType_TOPK_RMV:
-		rndPlayer, rndValue := rand.Intn(maxId), rand.Intn(maxValue)
+	case proto.CRDTType_TOPK_RMV:
+		rndPlayer, rndValue := rand.Int31n(maxId), rand.Int31n(maxValue)
 		isAdd := rand.Float32() < addProb
-		writeBuf = antidote.CreateTopKRmvUpdate(isAdd, rndPlayer, rndValue)
-
-	case antidote.CRDTType_ORSET:
-		rndElem := elems[rand.Intn(len(elems))]
-		if rand.Float32() < addProb {
-			fmt.Println("Generating add for ORSET")
-			writeBuf = antidote.CreateSetUpdate(antidote.ApbSetUpdate_ADD, []string{rndElem})
+		if isAdd {
+			upd = crdt.TopKAdd{TopKScore: crdt.TopKScore{Id: rndPlayer, Score: rndValue}}
 		} else {
-			fmt.Println("Generating remove for ORSET")
-			writeBuf = antidote.CreateSetUpdate(antidote.ApbSetUpdate_REMOVE, []string{rndElem})
+			upd = crdt.TopKRemove{Id: rndPlayer}
 		}
 
-	case antidote.CRDTType_COUNTER:
+	case proto.CRDTType_ORSET:
+		rndElem := elems[rand.Intn(len(elems))]
+		if rand.Float32() < addProb {
+			upd = crdt.Add{Element: crdt.Element(rndElem)}
+		} else {
+			upd = crdt.Remove{Element: crdt.Element(rndElem)}
+		}
+
+	case proto.CRDTType_COUNTER:
 		//Negative inc as dec
-		writeBuf = antidote.CreateCounterUpdate(rand.Intn(maxValue*2) - maxValue)
+		upd = crdt.Increment{Change: rand.Int31n(maxValue*2) - maxValue}
 
-	case antidote.CRDTType_LWWREG:
-		writeBuf = antidote.CreateRegisterUpdate(fmt.Sprint(rand.Intn(maxValue)))
+	case proto.CRDTType_LWWREG:
+		upd = crdt.SetValue{NewValue: fmt.Sprint(rand.Intn(maxValue))}
 
-	case antidote.CRDTType_ORMAP:
+	case proto.CRDTType_ORMAP:
 		key := mapKeys[rand.Intn(len(mapKeys))]
 		value := crdt.Element(elems[rand.Intn(len(elems))])
 		isAdd := rand.Float32() < addProb
 		if isAdd {
-			writeBuf = antidote.CreateORMapUpdate(isAdd, map[string]crdt.Element{key: value}, nil)
+			upd = crdt.MapAdd{Key: key, Value: value}
 		} else {
-			writeBuf = antidote.CreateORMapUpdate(isAdd, nil, map[string]struct{}{key: struct{}{}})
+			upd = crdt.MapRemove{Key: key}
 		}
 
-	case antidote.CRDTType_RRMAP:
-		//TODO: This is potencially very unefficient - use this only for testing/debugging!
+	case proto.CRDTType_RRMAP:
+		//NOTE: This is potencially very unefficient - use this only for testing/debugging!
 		nOps := 1 + rand.Intn(maxEmbUpdates)
 		isAdd := rand.Float32() < rrMapAddProb
-		adds := make(map[string]*antidote.ApbUpdateOp)
+		adds := make(map[string]*proto.ApbUpdateOp)
 		rems := make(map[string]struct{})
 
 		if isAdd {
@@ -462,29 +506,40 @@ func getNextWrite(transId []byte, key string, crdtType antidote.CRDTType) (updat
 				}
 			}
 		}
-		writeBuf = antidote.CreateMapUpdateFromProto(isAdd, adds, rems)
+		return &proto.ApbUpdateObjects{
+			TransactionDescriptor: transId,
+			Updates: []*proto.ApbUpdateOp{&proto.ApbUpdateOp{
+				Boundobject: &proto.ApbBoundObject{Key: []byte(key), Type: &crdtType, Bucket: []byte(bucket)},
+				Operation:   &proto.ApbUpdateOperation{Mapop: crdt.CreateMapUpdateFromProto(isAdd, adds, rems)},
+			}}}
+		//writeBuf = crdt.CreateMapUpdateFromProto(isAdd, adds, rems)
 
-	case antidote.CRDTType_AVG:
-		writeBuf = antidote.CreateAvgUpdate(rand.Int63n(maxValue), 1)
+	case proto.CRDTType_AVG:
+		upd = crdt.AddValue{Value: rand.Int63n(maxValue)}
 
-	case antidote.CRDTType_MAXMIN:
-		writeBuf = antidote.CreateMaxMinUpdate(rand.Int63n(maxValue), isMax)
+	case proto.CRDTType_MAXMIN:
+		if isMax {
+			upd = crdt.MaxAddValue{Value: rand.Int63n(maxValue)}
+		} else {
+			upd = crdt.MinAddValue{Value: rand.Int63n(maxValue)}
+		}
 	}
 
-	fmt.Println("Finished generating ApbUpdateObjects for", crdtType.String())
-	return antidote.CreateUpdateObjs(transId, key, crdtType, bucket, writeBuf)
+	updParams := []antidote.UpdateObjectParams{antidote.UpdateObjectParams{
+		KeyParams:  antidote.CreateKeyParams(key, crdtType, bucket),
+		UpdateArgs: &upd,
+	}}
+	return antidote.CreateUpdateObjs(transId, updParams)
+	//fmt.Println("Finished generating ApbUpdateObjects for", crdtType.String())
+	//return antidote.CreateUpdateObjs(transId, key, crdtType, bucket, writeBuf)
 }
 
-func getNextRead(transId []byte, key string, crdtType antidote.CRDTType) (readBuf *antidote.ApbReadObjects) {
+func getNextRead(transId []byte, key string, crdtType proto.CRDTType) (readBuf *proto.ApbReadObjects) {
 	return createRead(transId, key, crdtType)
 }
 
-func createRead(transId []byte, key string, crdtType antidote.CRDTType) (readBuf *antidote.ApbReadObjects) {
-	return antidote.CreateReadObjs(transId, key, crdtType, bucket)
-}
-
-func createCounterWrite(transId []byte, key string) (updateBuf *antidote.ApbUpdateObjects) {
-	return antidote.CreateUpdateObjs(transId, key, antidote.CRDTType_COUNTER, bucket, antidote.CreateCounterUpdate(5))
+func createRead(transId []byte, key string, crdtType proto.CRDTType) (readBuf *proto.ApbReadObjects) {
+	return antidote.CreateSingleReadObjs(transId, key, crdtType, bucket)
 }
 
 func getRandomLocationParams() (key string, bucket string) {
@@ -494,7 +549,7 @@ func getRandomLocationParams() (key string, bucket string) {
 //For every key combination, checks if all servers have the same results.
 //Only works for sets as of now.
 //TODO: Divide this in submethods
-func verifyReplication(crdtType antidote.CRDTType) {
+func verifyReplication(crdtType proto.CRDTType) {
 	//Wait for replication
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
 	fmt.Println("Verifying convergence...")
@@ -519,15 +574,15 @@ func verifyReplication(crdtType antidote.CRDTType) {
 			}
 		}
 		fmt.Println("Requesting read for:", readParams)
-		proto := antidote.CreateStaticReadObjs(nil, readParams)
-		antidote.SendProto(antidote.StaticReadObjs, proto, conn)
+		protobuf := antidote.CreateStaticReadObjs(nil, readParams)
+		antidote.SendProto(antidote.StaticReadObjs, protobuf, conn)
 
 		//Receiving reply and decoding it
 		_, reply, _ := antidote.ReceiveProto(conn)
-		typedReply := reply.(*antidote.ApbStaticReadObjectsResp)
+		typedReply := reply.(*proto.ApbStaticReadObjectsResp)
 		fmt.Println("Received proto reply with objects:", typedReply.GetObjects())
 		for _, objProto := range typedReply.GetObjects().GetObjects() {
-			results[serverID] = append(results[serverID], antidote.ConvertProtoObjectToAntidoteState(objProto, crdtType))
+			results[serverID] = append(results[serverID], crdt.ReadRespProtoToAntidoteState(objProto, crdtType, proto.READType_FULL))
 		}
 		fmt.Println("")
 	}
@@ -783,7 +838,7 @@ func executeNonStaticBenchmark(connection net.Conn, args *BenchmarkArgs, finishC
 		//Start txn
 		antidote.SendProto(antidote.StartTrans, antidote.CreateStartTransaction(previousTs), connection)
 		_, receivedProto, _ := antidote.ReceiveProto(connection)
-		startTransResp := receivedProto.(*antidote.ApbStartTransactionResp)
+		startTransResp := receivedProto.(*proto.ApbStartTransactionResp)
 		previousTs = startTransResp.GetTransactionDescriptor()
 
 		nOps := rand.Intn(args.nOpsRange) + minOpsPerTrans
@@ -809,7 +864,7 @@ func executeNonStaticBenchmark(connection net.Conn, args *BenchmarkArgs, finishC
 			fmt.Printf("Client %d completed txn number %d.\n", args.clientID, nDone+1)
 		}
 		_, receivedProto, _ = antidote.ReceiveProto(connection)
-		commitReply := receivedProto.(*antidote.ApbCommitResp)
+		commitReply := receivedProto.(*proto.ApbCommitResp)
 		previousTs = commitReply.GetCommitTime()
 	}
 	totalTime := time.Now().UTC().UnixNano() - startTime
@@ -847,23 +902,23 @@ func executeStaticBenchmark(connection net.Conn, args *BenchmarkArgs, finishChan
 	finishChan <- totalTime
 }
 
-func getRandomUpdateArgs(nWrites int, crdtType antidote.CRDTType, args *BenchmarkArgs) (updArgs []crdt.UpdateArguments) {
-	switch testCrdtType {
-	case antidote.CRDTType_COUNTER:
+func getRandomUpdateArgs(nWrites int, crdtType proto.CRDTType, args *BenchmarkArgs) (updArgs []crdt.UpdateArguments) {
+	switch crdtType {
+	case proto.CRDTType_COUNTER:
 		updArgs = getRandomCounterUpdateArgs(nWrites)
-	case antidote.CRDTType_LWWREG:
+	case proto.CRDTType_LWWREG:
 		updArgs = getRandomRegisterUpdateArgs(nWrites)
-	case antidote.CRDTType_ORSET:
+	case proto.CRDTType_ORSET:
 		updArgs = getRandomSetUpdateArgs(nWrites, args)
-	case antidote.CRDTType_ORMAP:
+	case proto.CRDTType_ORMAP:
 		updArgs = getRandomMapUpdateArgs(nWrites, args)
-	case antidote.CRDTType_RRMAP:
+	case proto.CRDTType_RRMAP:
 		updArgs = getRandomEmbMapUpdateArgs(nWrites, args)
-	case antidote.CRDTType_TOPK_RMV:
+	case proto.CRDTType_TOPK_RMV:
 		updArgs = getRandomTopKRmvUpdateArgs(nWrites)
-	case antidote.CRDTType_AVG:
+	case proto.CRDTType_AVG:
 		updArgs = getRandomAvgUpdateArgs(nWrites)
-	case antidote.CRDTType_MAXMIN:
+	case proto.CRDTType_MAXMIN:
 		updArgs = getRandomMaxMinUpdateArgs(nWrites)
 	}
 	return
@@ -913,10 +968,16 @@ func getRandomEmbMapUpdateArgs(nWrites int, args *BenchmarkArgs) (updArgs []crdt
 	updArgs = make([]crdt.UpdateArguments, nWrites)
 	for i := 0; i < nWrites; i++ {
 		if rand.Float64() < addProb {
+			//crdtType := args.crdtTypes[rand.Intn(len(args.crdtTypes))]
+			//fmt.Println("Using inner type", crdtType)
+			//TODO: Actually need to restrict this - we can generate updates of two different CRDT types for the same key!
+			//For now, I replaced crdtType with testCrdtType
+			//This can still crash if the first update is remove (ORMap) while doing RRMap.
 			updArgs[i] = crdt.EmbMapUpdate{
 				Key: args.keys[rand.Intn(len(args.keys))],
-				Upd: getRandomUpdateArgs(1, args.crdtTypes[rand.Intn(len(args.crdtTypes))], args)[0],
+				Upd: getRandomUpdateArgs(1, testCrdtType, args)[0],
 			}
+			fmt.Printf("Actually generated: %T %v\n", updArgs[i].(crdt.EmbMapUpdate).Upd, updArgs[i].(crdt.EmbMapUpdate).Upd)
 		} else {
 			updArgs[i] = crdt.MapRemove{Key: args.keys[rand.Intn(len(args.keys))]}
 		}
