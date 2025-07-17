@@ -7,15 +7,18 @@ import (
 	rand "math/rand"
 	"net"
 	"os"
-	"potionDB/src/antidote"
-	"potionDB/src/crdt"
-	"potionDB/src/proto"
-	"potionDB/src/tools"
+	"potionDB/crdt/crdt"
+	"potionDB/crdt/proto"
+	antidote "potionDB/potionDB/components"
+	"potionDB/potionDB/utilities"
 	"potionDB_client/src/clientLib"
 	"sort"
+	"sqlToKeyValue/src/sql"
 	"time"
 
-	pb "github.com/golang/protobuf/proto"
+	//pb "github.com/golang/protobuf/proto"
+
+	pb "google.golang.org/protobuf/proto"
 )
 
 type BenchmarkArgs struct {
@@ -57,7 +60,8 @@ const (
 
 var (
 	//testCrdtType = proto.CRDTType_TOPK_RMV
-	testCrdtType = proto.CRDTType_RRMAP
+	//testCrdtType = proto.CRDTType_RRMAP
+	testCrdtType = proto.CRDTType_COUNTER
 	keys         = []string{"topk1"}
 	//keys = []string{"topk1", "topk2"}
 	//keys = [4]string{"counter1", "counter2", "counter3", "counter4"}
@@ -67,7 +71,9 @@ var (
 	elems   = []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 	//mapKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
 	mapKeys = []string{"1", "2", "3", "4"}
-	servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
+	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089"}
+	servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089", "127.0.0.1:8090", "127.0.0.1:8091"}
+	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
 	//servers  = []string{"127.0.0.1:8087"}
 	embTypes = []proto.CRDTType{proto.CRDTType_TOPK_RMV,
 		proto.CRDTType_ORSET, proto.CRDTType_MAXMIN}
@@ -82,18 +88,17 @@ Give some random (but low) delay between transactions. Repeat if they get aborte
 
 func main() {
 	//connection, err := net.Dial("tcp", "127.0.0.1:8087")
-	//tools.CheckErr("Network connection establishment err", err)
+	//utilities.CheckErr("Network connection establishment err", err)
 
 	rand.Seed(time.Now().UTC().UnixNano())
 	//transactionCycle(connection)
-
 	/*
 		for i := 0; i < nClients; i++ {
 			conn, err := net.Dial("tcp", servers[i%len(servers)])
-			tools.CheckErr("Network connection establishment err", err)
+			utilities.CheckErr("Network connection establishment err", err)
 			go transactionCycle(i, conn)
-		}
-	*/
+		}*/
+
 	//fmt.Println("Click enter once transactions stop happening.")
 	//reader.ReadString('\n')
 
@@ -109,29 +114,181 @@ func main() {
 	*/
 	//benchmark()
 	//testSet(connection)
-	//testStaticUpdate(connection)
 	//time.Sleep(time.Duration(1000) * time.Millisecond)
 	//testStaticRead(connection, antidote.CRDTType_COUNTER, 10)
 
 	conns := make([]net.Conn, len(servers))
 	for i := 0; i < len(servers); i++ {
 		conn, err := net.Dial("tcp", servers[i])
-		tools.CheckErr("Network connection establishment err", err)
+		utilities.CheckErr("Network connection establishment err", err)
 		conns[i] = conn
 	}
 
-	testRemoteOps(conns)
+	//testStaticUpdate(conns[0])
+	//testRemoteOps(conns)
+	//sophiaTestRemote(conns)
+	//sophiaTestMix2(conns)
 
+	//time.Sleep(5000 * time.Millisecond)
+	//testStaticRead(conns[1], testCrdtType, 1)
+	//testStaticRead(conns[2], testCrdtType, 2)
+
+	//testBoundedCounter(conns)
+	//testFlags(conns)
+	//testTopK(conns)
 	select {}
 }
 
-//Assumes a list of connections and two or more buckets
+func testSQL(conns []net.Conn) {
+	clientTestCreateTable(conns, sql.Table)
+}
+
+func clientTestCreateTable(conns []net.Conn, sqlCode string) {
+	clientLib.CreateTable(conns[0], sqlCode)
+}
+
+func sophiaTestRemote(conns []net.Conn) {
+	//Remote
+	keyParams := crdt.MakeKeyParams("some_other_key_counter", proto.CRDTType_COUNTER, "R1")
+	//Local
+	//keyParams := crdt.MakeKeyParams("some_other_key_counter", proto.CRDTType_COUNTER, "some_bucket")
+	readParams := []crdt.ReadObjectParams{{KeyParams: keyParams}}
+	updParams := []crdt.UpdateObjectParams{{KeyParams: keyParams, UpdateArgs: crdt.Increment{Change: 3}}}
+
+	fmt.Println("[TXN1]")
+	txnId := clientLib.StartTxn(conns[0])
+	readReply := clientLib.Read(conns[0], txnId, readParams)
+	fmt.Println("[MY_TEST_KEY2]", 8087, readReply.GetObjects()[0].GetCounter().GetValue())
+	clientLib.Update(conns[0], txnId, updParams)
+	readReply = clientLib.Read(conns[0], txnId, readParams)
+	fmt.Println("[MY_TEST_KEY2]", 8087, readReply.GetObjects()[0].GetCounter().GetValue())
+	clientLib.Update(conns[0], txnId, updParams)
+	readReply = clientLib.Read(conns[0], txnId, readParams)
+	fmt.Println("[MY_TEST_KEY2]", 8087, readReply.GetObjects()[0].GetCounter().GetValue())
+	txnId = clientLib.CommitTxn(conns[0], txnId)
+
+	//time.Sleep(5000 * time.Millisecond)
+
+	fmt.Println("[TXN2]")
+	txnId = clientLib.StartTxn(conns[0])
+	readReply = clientLib.Read(conns[0], txnId, readParams)
+	fmt.Println("[MY_TEST_KEY2]", 8087, readReply.GetObjects()[0].GetCounter().GetValue())
+	txnId = clientLib.CommitTxn(conns[0], txnId)
+	//time.Sleep(5000 * time.Millisecond)
+
+	fmt.Println("[TXN3]")
+	staticReadReply := clientLib.StaticRead(conns[0], txnId, readParams)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	fmt.Println("[MY_TEST_KEY2]", 8087, staticReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	updParams[0].UpdateArgs = crdt.Increment{Change: 2}
+	updReply := clientLib.StaticUpdate(conns[0], txnId, updParams)
+	txnId = updReply.GetCommitTime()
+	staticReadReply = clientLib.StaticRead(conns[0], txnId, readParams)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	fmt.Println("[MY_TEST_KEY2]", 8087, staticReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	//time.Sleep(5000 * time.Millisecond)
+
+	fmt.Println("[TXN4]")
+	updParams[0].UpdateArgs = crdt.Increment{Change: 3}
+	updReply = clientLib.StaticUpdate(conns[0], txnId, updParams)
+	txnId = updReply.GetCommitTime()
+	staticReadReply = clientLib.StaticRead(conns[0], txnId, readParams)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	fmt.Println("[MY_TEST_KEY2]", 8087, staticReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+
+	fmt.Println("Finish")
+}
+
+func sophiaTestMix2(conns []net.Conn) {
+	conn := conns[0]
+	key1, key2, key3 := crdt.MakeKeyParams("some_key_counter", proto.CRDTType_COUNTER, "R2"),
+		crdt.MakeKeyParams("some_other_key_counter", proto.CRDTType_COUNTER, "R1"),
+		crdt.MakeKeyParams("some_key_orset", proto.CRDTType_ORSET, "R2")
+
+	//key1, key2, key3 := crdt.MakeKeyParams("some_key_counter", proto.CRDTType_COUNTER, "some_bucket"),
+	//	crdt.MakeKeyParams("some_other_key_counter", proto.CRDTType_COUNTER, "some_bucket"),
+	//	crdt.MakeKeyParams("some_key_orset", proto.CRDTType_ORSET, "some_bucket")
+	allRead := []crdt.ReadObjectParams{{KeyParams: key1}, {KeyParams: key2}, {KeyParams: key3}}
+	firstRead := []crdt.ReadObjectParams{{KeyParams: key1}}
+	firstTwoRead := []crdt.ReadObjectParams{{KeyParams: key1}, {KeyParams: key2}}
+	thirdRead := []crdt.ReadObjectParams{{KeyParams: key3}}
+
+	upd1, upd2, upd3 := crdt.Increment{Change: 2}, crdt.Increment{Change: 3}, crdt.AddAll{Elems: []crdt.Element{"val1", "val2"}}
+	updAll := []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: upd1}, {KeyParams: key2, UpdateArgs: upd2}, {KeyParams: key3, UpdateArgs: upd3}}
+	firstUpd := []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: upd1}}
+	secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
+
+	fmt.Println("[TXN1]")
+	txnId := clientLib.StartTxn(conn)
+	readReply := clientLib.Read(conn, txnId, firstRead)
+	readReply = clientLib.Read(conn, txnId, firstTwoRead)
+	objs := readReply.GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY2]", 8087, objs[1].GetCounter().GetValue())
+	readReply = clientLib.Read(conn, txnId, thirdRead)
+	objs = readReply.GetObjects()
+	fmt.Println("[MY_TEST_KEY3]", 8087, objs[0].GetSet().GetValue())
+	clientLib.Update(conn, txnId, updAll)
+	readReply = clientLib.Read(conn, txnId, allRead)
+	objs = readReply.GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY2]", 8087, objs[1].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY3]", 8087, objs[2].GetSet().GetValue())
+	txnId = clientLib.CommitTxn(conn, txnId)
+
+	fmt.Println("[TXN2]")
+	txnId = clientLib.StartTxn(conn)
+	readReply = clientLib.Read(conn, txnId, firstTwoRead)
+	objs = readReply.GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY2]", 8087, objs[1].GetCounter().GetValue())
+	upd1 = crdt.Increment{Change: 8}
+	clientLib.Update(conn, txnId, firstUpd)
+	readReply = clientLib.Read(conn, txnId, firstRead)
+	objs = readReply.GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	txnId = clientLib.CommitTxn(conn, txnId)
+
+	fmt.Println("[TXN3]")
+	txnId = clientLib.StartTxn(conn)
+	upd1 = crdt.Increment{Change: 5}
+	clientLib.Update(conn, txnId, firstUpd)
+	readReply = clientLib.Read(conn, txnId, firstRead)
+	objs = readReply.GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	txnId = clientLib.CommitTxn(conn, txnId)
+
+	fmt.Println("[TXN4]")
+	staticReadReply := clientLib.StaticRead(conn, txnId, firstTwoRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs = staticReadReply.GetObjects().GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY2]", 8087, objs[1].GetCounter().GetValue())
+	upd1, upd2, upd3 = crdt.Increment{Change: 3}, crdt.Increment{Change: 2}, crdt.AddAll{Elems: []crdt.Element{"val3"}}
+	txnId = clientLib.StaticUpdate(conn, txnId, updAll).GetCommitTime()
+	staticReadReply = clientLib.StaticRead(conn, txnId, allRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs = staticReadReply.GetObjects().GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY2]", 8087, objs[1].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY3]", 8087, objs[2].GetSet().GetValue())
+
+	fmt.Println("[TXN5]")
+	upd2 = crdt.Increment{Change: 3}
+	txnId = clientLib.StaticUpdate(conn, txnId, secondUpd).GetCommitTime()
+	staticReadReply = clientLib.StaticRead(conn, txnId, allRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs = staticReadReply.GetObjects().GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY2]", 8087, objs[1].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY3]", 8087, objs[2].GetSet().GetValue())
+}
+
+// Assumes a list of connections and two or more buckets
 func testRemoteOps(conns []net.Conn) {
 	txnId := clientLib.StartTxn(conns[0])
 
-	read := []antidote.ReadObjectParams{antidote.ReadObjectParams{
-		KeyParams: antidote.CreateKeyParams("key1", proto.CRDTType_COUNTER, "R1"),
-	}}
+	read := []crdt.ReadObjectParams{{KeyParams: crdt.MakeKeyParams("key1", proto.CRDTType_COUNTER, "R1")}}
 	antidote.SendProto(antidote.ReadObjs, antidote.CreateReadObjs(txnId, read), conns[0])
 	antidote.ReceiveProto(conns[0])
 	fmt.Println("Read reply received")
@@ -143,12 +300,12 @@ func testStaticRead(connection net.Conn, crdtType proto.CRDTType, nReads int) (r
 	reads := createReadObjectParams(crdtType, nReads)
 	proto := antidote.CreateStaticReadObjs(nil, reads)
 	antidote.SendProto(antidote.StaticReadObjs, proto, connection)
-	//fmt.Println("Proto sent! Waiting for reply.")
+	fmt.Println("Proto sent! Waiting for reply.")
 
 	//Wait for reply
-	antidote.ReceiveProto(connection)
-	//protoType, receivedProto, _ := antidote.ReceiveProto(connection)
-	//fmt.Println("Received type, proto: ", protoType, receivedProto)
+	//antidote.ReceiveProto(connection)
+	protoType, receivedProto, _ := antidote.ReceiveProto(connection)
+	fmt.Println("Received type, proto: ", protoType, receivedProto)
 
 	return
 }
@@ -167,26 +324,25 @@ func testRead(connection net.Conn, transId []byte, crdtType proto.CRDTType, nRea
 	return
 }
 
-func createReadObjectParams(crdtType proto.CRDTType, nReads int) (reads []antidote.ReadObjectParams) {
-	reads = make([]antidote.ReadObjectParams, nReads)
+func createReadObjectParams(crdtType proto.CRDTType, nReads int) (reads []crdt.ReadObjectParams) {
+	reads = make([]crdt.ReadObjectParams, nReads)
 	for i := 0; i < len(reads); i++ {
 		rndKey, rndBucket := getRandomLocationParams()
-		reads[i] = antidote.ReadObjectParams{
-			KeyParams: antidote.CreateKeyParams(rndKey, crdtType, rndBucket),
+		reads[i] = crdt.ReadObjectParams{
+			KeyParams: crdt.MakeKeyParams(rndKey, crdtType, rndBucket),
 		}
 	}
 	return
 }
 
 func testStaticUpdate(connection net.Conn) (receivedProto pb.Message) {
-	updates := make([]antidote.UpdateObjectParams, 1)
-	inc := rand.Int31n(100)
+	updates := make([]crdt.UpdateObjectParams, 1)
+	inc := 1 + rand.Int31n(100)
 	rndKey, rndBucket := getRandomLocationParams()
 	fmt.Println("Incrementing with:", inc)
-	var upd crdt.UpdateArguments = crdt.Increment{Change: inc}
-	updates[0] = antidote.UpdateObjectParams{
-		KeyParams:  antidote.CreateKeyParams(rndKey, proto.CRDTType_COUNTER, rndBucket),
-		UpdateArgs: &upd,
+	updates[0] = crdt.UpdateObjectParams{
+		KeyParams:  crdt.MakeKeyParams(rndKey, proto.CRDTType_COUNTER, rndBucket),
+		UpdateArgs: crdt.Increment{Change: inc},
 	}
 
 	proto := antidote.CreateStaticUpdateObjs(nil, updates)
@@ -271,14 +427,14 @@ func testGenericUpdate(connection net.Conn, transId []byte, crdtType proto.CRDTT
 	//fmt.Println("Received type, proto: ", protoType, receivedProto)
 }
 
-func createUpdateObjectParams(crdtType proto.CRDTType, args []crdt.UpdateArguments) (updates []antidote.UpdateObjectParams) {
-	updates = make([]antidote.UpdateObjectParams, len(args))
+func createUpdateObjectParams(crdtType proto.CRDTType, args []crdt.UpdateArguments) (updates []crdt.UpdateObjectParams) {
+	updates = make([]crdt.UpdateObjectParams, len(args))
 	for i := 0; i < len(args); i++ {
 		rndKey, rndBucket := getRandomLocationParams()
 		//fmt.Println("Generating update op to key, bucket", rndKey, rndBucket)
-		updates[i] = antidote.UpdateObjectParams{
-			KeyParams:  antidote.CreateKeyParams(rndKey, crdtType, rndBucket),
-			UpdateArgs: &args[i],
+		updates[i] = crdt.UpdateObjectParams{
+			KeyParams:  crdt.MakeKeyParams(rndKey, crdtType, rndBucket),
+			UpdateArgs: args[i],
 		}
 	}
 	return
@@ -396,6 +552,280 @@ func debugWithTopk(connection net.Conn, transId []byte) {
 	*/
 }
 
+func testTopK(conns []net.Conn) {
+	fmt.Println("*****TOPK (Top w/o removals) Test*****")
+	entries, keyParams := make(map[int32]int32), crdt.MakeKeyParams("topknormv", proto.CRDTType_TOPK, "INDEX")
+	for len(entries) < 300 {
+		key, value := rand.Int31n(500), rand.Int31n(100)
+		entries[key] = value
+	}
+	entriesSlice := make([]int32, len(entries))
+	updP := make([]crdt.UpdateObjectParams, len(entries))
+	i := 0
+	data := &[]byte{}
+	for id, value := range entries {
+		updP[i] = crdt.UpdateObjectParams{KeyParams: keyParams, UpdateArgs: crdt.TopKAdd{TopKScore: crdt.TopKScore{Id: id, Score: value, Data: data}}}
+		entriesSlice[i] = id
+		i++
+	}
+	fmt.Printf("Sending %d TopKAdd updates\n", len(entries))
+	txnId := clientLib.StaticUpdate(conns[0], nil, updP).GetCommitTime()
+	time.Sleep(20 * time.Millisecond)
+	readP := []crdt.ReadObjectParams{{KeyParams: keyParams}}
+	readReply := clientLib.StaticRead(conns[0], txnId, readP).GetObjects().GetObjects()[0]
+	state := crdt.ReadRespProtoToAntidoteState(readReply, proto.CRDTType_TOPK, proto.READType_FULL).(crdt.TopKValueState)
+
+	sort.Slice(entriesSlice, func(i, j int) bool {
+		return entries[entriesSlice[i]] > entries[entriesSlice[j]] ||
+			(entries[entriesSlice[i]] == entries[entriesSlice[j]] && entriesSlice[i] > entriesSlice[j])
+	})
+	sort.Slice(state.Scores, func(i, j int) bool {
+		return state.Scores[i].Score > state.Scores[j].Score ||
+			(state.Scores[i].Score == state.Scores[j].Score && state.Scores[i].Id > state.Scores[j].Id)
+	})
+
+	fmt.Printf("Read result (len: %d):\n", len(state.Scores))
+	fmt.Print("[")
+	for _, topKScore := range state.Scores {
+		fmt.Printf("{%d:%d}, ", topKScore.Id, topKScore.Score)
+	}
+	fmt.Println("]")
+	fmt.Println("Entries sent:")
+	fmt.Println("[")
+	for _, id := range entriesSlice {
+		fmt.Printf("{%d:%d}, ", id, entries[id])
+	}
+	fmt.Println("]")
+	fmt.Println("Sleeping for a while and then requesting read on another replica.")
+	time.Sleep(10000 * time.Millisecond)
+	readReply = clientLib.StaticRead(conns[1], nil, readP).GetObjects().GetObjects()[0]
+	state = crdt.ReadRespProtoToAntidoteState(readReply, proto.CRDTType_TOPK, proto.READType_FULL).(crdt.TopKValueState)
+	sort.Slice(state.Scores, func(i, j int) bool {
+		return state.Scores[i].Score > state.Scores[j].Score ||
+			(state.Scores[i].Score == state.Scores[j].Score && state.Scores[i].Id > state.Scores[j].Id)
+	})
+	fmt.Println("Remote replica read result:")
+	fmt.Print("[")
+	for _, topKScore := range state.Scores {
+		fmt.Printf("{%d:%d}, ", topKScore.Id, topKScore.Score)
+	}
+	fmt.Println("]")
+}
+
+/*
+Tests all flag types (EW, DW, LWW)
+Test 1: default read
+Test 2: turn true, read
+Test 3: turn false, read
+Test 4: false for EW, true for DW
+Test 5: 4x true, 1x false, read
+Test 6: false for EW, true for DW
+Test 6: 4x false, 1x true, read
+Test 7: false for EW, true for DW
+Test 8: 3x true, 2x false, read
+*/
+func testFlags(conns []net.Conn) {
+	crdtTypes := []proto.CRDTType{proto.CRDTType_FLAG_EW, proto.CRDTType_FLAG_DW, proto.CRDTType_FLAG_LWW}
+	resetFlag := []bool{false, true, false}
+	flags := [][]bool{{true, true, false, true, true}, {false, true, false, false, false}, {true, false, true, false, true}}
+	txnIDs := make([][]byte, len(conns))
+	//readResults := make([]bool, len(conns))
+	readResultsString := ""
+	concurrencyTexts := []string{"4x true, 1x false", "1x true, 4x false", "3x true, 2x false"}
+
+	for i, crdtType := range crdtTypes {
+		printFlag := "[" + fmt.Sprintf("%v", crdtType) + "]"
+		key := crdt.MakeKeyParams("flag", crdtType, "INDEX")
+		readP := []crdt.ReadObjectParams{{KeyParams: key}}
+		readReply := clientLib.StaticRead(conns[0], nil, readP)
+		fmt.Println("##########Test: ", crdtType, "##########")
+		fmt.Println("*****Initial Read*****")
+		fmt.Println(printFlag, readReply.GetObjects().GetObjects()[0].GetFlag().GetValue())
+
+		trueUpdParams := []crdt.UpdateObjectParams{{KeyParams: key, UpdateArgs: crdt.EnableFlag{}}}
+		falseUpdParams := []crdt.UpdateObjectParams{{KeyParams: key, UpdateArgs: crdt.DisableFlag{}}}
+
+		txnId := clientLib.StaticUpdate(conns[0], nil, trueUpdParams).GetCommitTime()
+		time.Sleep(20 * time.Millisecond)
+		readReply = clientLib.StaticRead(conns[0], txnId, readP)
+		fmt.Println("*****Turn true*****")
+		fmt.Println(printFlag, readReply.GetObjects().GetObjects()[0].GetFlag().GetValue())
+
+		txnId = clientLib.StaticUpdate(conns[0], nil, falseUpdParams).GetCommitTime()
+		time.Sleep(20 * time.Millisecond)
+		readReply = clientLib.StaticRead(conns[0], txnId, readP)
+		fmt.Println("*****Turn false*****")
+		fmt.Println(printFlag, readReply.GetObjects().GetObjects()[0].GetFlag().GetValue())
+
+		//Do concurrency tests: reset + concurrency
+		for j, concFlags := range flags {
+			//Reset
+			txnId = staticUpdateFlag(conns[0], txnId, trueUpdParams, falseUpdParams, resetFlag[i])
+			readReply = clientLib.StaticRead(conns[0], txnId, readP)
+			fmt.Println("*****Reset (turn ", resetFlag[i], ")*****")
+			fmt.Println(printFlag, readReply.GetObjects().GetObjects()[0].GetFlag().GetValue())
+			//Wait for replication
+			time.Sleep(5000 * time.Millisecond)
+
+			//Concurrency test
+			for k, flag := range concFlags {
+				txnIDs[k] = staticUpdateFlag(conns[k], txnIDs[k], trueUpdParams, falseUpdParams, flag)
+			}
+			//Wait for replication
+			time.Sleep(5000 * time.Millisecond)
+			//Check read everywhere
+			readResultsString = ""
+			for k, conn := range conns {
+				readResultsString += fmt.Sprintf("%v, ", clientLib.StaticRead(conn, txnIDs[k], readP).GetObjects().GetObjects()[0].GetFlag().GetValue())
+			}
+			fmt.Println("*****Concurrency test: ", concurrencyTexts[j])
+			fmt.Println(printFlag, readResultsString)
+			fmt.Println("(Expected: ", flagExpectedConcurrency(crdtType), ")")
+		}
+	}
+	fmt.Println("Flag test complete")
+}
+
+func staticUpdateFlag(conn net.Conn, txnId []byte,
+	trueUpdParams, falseUpdParams []crdt.UpdateObjectParams, isTrue bool) (newTxnId []byte) {
+	if isTrue {
+		return clientLib.StaticUpdate(conn, nil, trueUpdParams).GetCommitTime()
+	}
+	return clientLib.StaticUpdate(conn, nil, falseUpdParams).GetCommitTime()
+}
+
+func flagExpectedConcurrency(crdtType proto.CRDTType) string {
+	if crdtType == proto.CRDTType_FLAG_EW {
+		return "true"
+	}
+	if crdtType == proto.CRDTType_FLAG_DW {
+		return "false"
+	}
+	if crdtType == proto.CRDTType_FLAG_LWW {
+		return "clock-based"
+	}
+	return "error"
+}
+
+func testBoundedCounter(conns []net.Conn) {
+	bc1Key := crdt.MakeKeyParams("bc1", proto.CRDTType_FATCOUNTER, "INDEX")
+	bc2Key := crdt.MakeKeyParams("bc2", proto.CRDTType_FATCOUNTER, "INDEX")
+
+	var bc1StartUpd crdt.UpdateArguments = crdt.SetCounterBound{Bound: 0, CompEq: false, InitialValue: 100}
+	var bc2StartUpd crdt.UpdateArguments = crdt.SetCounterBound{Bound: -10, CompEq: true, InitialValue: 10}
+
+	bc1UpdParams := []crdt.UpdateObjectParams{{KeyParams: bc1Key, UpdateArgs: bc1StartUpd}}
+	bc2UpdParams := []crdt.UpdateObjectParams{{KeyParams: bc2Key, UpdateArgs: bc2StartUpd}}
+
+	bc1TxnId := clientLib.StaticUpdate(conns[0], nil, bc1UpdParams).GetCommitTime()
+	bc2TxnId := clientLib.StaticUpdate(conns[1], nil, bc2UpdParams).GetCommitTime()
+
+	bc1ReadParams := []crdt.ReadObjectParams{{KeyParams: bc1Key}}
+	bc2ReadParams := []crdt.ReadObjectParams{{KeyParams: bc2Key}}
+
+	time.Sleep(200 * time.Millisecond)
+
+	bc1ReadReply := clientLib.StaticRead(conns[0], bc1TxnId, bc1ReadParams)
+	bc2ReadReply := clientLib.StaticRead(conns[1], bc2TxnId, bc2ReadParams)
+
+	fmt.Println("*****Initial Read*****")
+	fmt.Println("[BC1][R1]", bc1ReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	fmt.Println("[BC2][R2]", bc2ReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+
+	//Try to do unallowed decrements in other replicas
+	bc1StartUpd = crdt.Decrement{Change: 10}
+	bothBcUpdParams := []crdt.UpdateObjectParams{{KeyParams: bc1Key, UpdateArgs: bc1StartUpd}, {KeyParams: bc2Key, UpdateArgs: bc1StartUpd}}
+	bothReadParams := []crdt.ReadObjectParams{{KeyParams: bc1Key}, {KeyParams: bc2Key}}
+	failedTxnId := clientLib.StaticUpdate(conns[2], nil, bothBcUpdParams).GetCommitTime()
+	failedReadReply := clientLib.StaticRead(conns[2], failedTxnId, bothReadParams)
+
+	fmt.Println()
+	fmt.Println("*****Read after decrement without permissions*****")
+	fmt.Println("[BC1][R3]", failedReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	fmt.Println("[BC2][R3]", failedReadReply.GetObjects().GetObjects()[1].GetCounter().GetValue())
+	fmt.Println("Expected: 0, 0")
+
+	//Sleep, try to do some decrements, observe result
+	time.Sleep(5000 * time.Millisecond)
+	//Request -10 on all replicas
+	bc1UpdParams[0].UpdateArgs = bc1StartUpd
+	fmt.Printf("[BC1]Requesting update on all replicas with args: %v+\n", bc1UpdParams[0].UpdateArgs)
+	txnIDs := make([][]byte, len(conns))
+	for i, conn := range conns {
+		txnIDs[i] = clientLib.StaticUpdate(conn, nil, bc1UpdParams).GetCommitTime()
+	}
+
+	time.Sleep(5000 * time.Millisecond)
+	bc1ReadReply = clientLib.StaticRead(conns[0], txnIDs[0], bc1ReadParams)
+	fmt.Println()
+	fmt.Println("*****Read after decrement with permissions*****")
+	fmt.Println("[BC1][R1]", bc1ReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	fmt.Println("Expected: 50")
+
+	//Try to do a decrement above limit and another on limit
+	bc1StartUpd, bc2StartUpd = crdt.Decrement{Change: 15}, crdt.Decrement{Change: 7}
+	bothBcUpdParams[0], bothBcUpdParams[1] = crdt.UpdateObjectParams{KeyParams: bc1Key, UpdateArgs: bc1StartUpd},
+		crdt.UpdateObjectParams{KeyParams: bc1Key, UpdateArgs: bc2StartUpd}
+	bc1TxnId = clientLib.StaticUpdate(conns[0], nil, bothBcUpdParams).GetCommitTime()
+	bc1ReadReply = clientLib.StaticRead(conns[0], nil, bc1ReadParams)
+	fmt.Println()
+	fmt.Println("*****Read after 2 decrements - failed and successful one*****")
+	fmt.Println("[BC1][R1]", bc1ReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	fmt.Println("Expected: 43")
+
+	//Try to decrement 5 on the first replica. It will fail.
+	//Wait a while, try again, and observe that it works
+	//(This tests the background permission exchange)
+	bc1StartUpd = crdt.Decrement{Change: 5}
+	bc1UpdParams[0].UpdateArgs = bc1StartUpd
+	clientLib.StaticUpdate(conns[0], bc1TxnId, bc1UpdParams)
+	bc1ReadReply = clientLib.StaticRead(conns[0], nil, bc1ReadParams)
+	fmt.Println()
+	fmt.Println("*****Read on replica with low permissions - failed update****")
+	fmt.Println("[BC1][R1]", bc1ReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	fmt.Println("Expected: 43")
+	fmt.Println("Sleeping for a while, waiting for background permissions exchange...")
+	time.Sleep(5000 * time.Millisecond)
+	clientLib.StaticUpdate(conns[0], bc1TxnId, bc1UpdParams)
+	bc1ReadReply = clientLib.StaticRead(conns[0], nil, bc1ReadParams)
+	fmt.Println("Redone update.")
+	fmt.Println("[BC1][R1]", bc1ReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	fmt.Println("Expected: 38")
+
+	//2nd counter
+	//Try to decrement below a replica's share, fail
+	//Afterwards, decrement each replica's full share.
+	//Wait for background permissions exchange, note that it still fails.
+	bc2StartUpd = crdt.Decrement{Change: 5}
+	bc2UpdParams[0].UpdateArgs = bc2StartUpd
+	bc2TxnId = clientLib.StaticUpdate(conns[0], nil, bc2UpdParams).GetCommitTime()
+	bc2ReadReply = clientLib.StaticRead(conns[0], nil, bc2ReadParams)
+	fmt.Println("*****Read after decrement above permissions*****")
+	fmt.Println("[BC2]", bc2ReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	fmt.Println("Expected: 10")
+	bc2StartUpd = crdt.Decrement{Change: 4}
+	bc2UpdParams[0].UpdateArgs = bc2StartUpd
+	for i, conn := range conns {
+		txnIDs[i] = clientLib.StaticUpdate(conn, nil, bc2UpdParams).GetCommitTime()
+	}
+	time.Sleep(5000 * time.Millisecond)
+	bc2ReadReply = clientLib.StaticRead(conns[0], nil, bc2ReadParams)
+	fmt.Println("*****Read after decrementing the max in every replica*****")
+	fmt.Println("[BC2]", bc2ReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	fmt.Println("Expected: -10 (counter's bound)")
+	fmt.Println("Sleeping, will try to decrement again (should not work)")
+	bc2StartUpd = crdt.Decrement{Change: 1}
+	bc2UpdParams[0].UpdateArgs = bc2StartUpd
+	for i, conn := range conns {
+		txnIDs[i] = clientLib.StaticUpdate(conn, nil, bc2UpdParams).GetCommitTime()
+	}
+	time.Sleep(5000 * time.Millisecond)
+	bc2ReadReply = clientLib.StaticRead(conns[0], nil, bc2ReadParams)
+	fmt.Println("*****Read after attempting further decrements in every replica*****")
+	fmt.Println("[BC2]", bc2ReadReply.GetObjects().GetObjects()[0].GetCounter().GetValue())
+	fmt.Println("Expected: -10")
+}
+
 func createAndSendOps(connection net.Conn, transId []byte) {
 	nOps := rand.Intn(maxOpsPerTrans-minOpsPerTrans+1) + minOpsPerTrans
 	for currOpN := 0; currOpN < nOps; currOpN++ {
@@ -508,7 +938,7 @@ func getNextWrite(transId []byte, key string, crdtType proto.CRDTType) (updateBu
 		}
 		return &proto.ApbUpdateObjects{
 			TransactionDescriptor: transId,
-			Updates: []*proto.ApbUpdateOp{&proto.ApbUpdateOp{
+			Updates: []*proto.ApbUpdateOp{{
 				Boundobject: &proto.ApbBoundObject{Key: []byte(key), Type: &crdtType, Bucket: []byte(bucket)},
 				Operation:   &proto.ApbUpdateOperation{Mapop: crdt.CreateMapUpdateFromProto(isAdd, adds, rems)},
 			}}}
@@ -525,10 +955,7 @@ func getNextWrite(transId []byte, key string, crdtType proto.CRDTType) (updateBu
 		}
 	}
 
-	updParams := []antidote.UpdateObjectParams{antidote.UpdateObjectParams{
-		KeyParams:  antidote.CreateKeyParams(key, crdtType, bucket),
-		UpdateArgs: &upd,
-	}}
+	updParams := []crdt.UpdateObjectParams{{KeyParams: crdt.MakeKeyParams(key, crdtType, bucket), UpdateArgs: upd}}
 	return antidote.CreateUpdateObjs(transId, updParams)
 	//fmt.Println("Finished generating ApbUpdateObjects for", crdtType.String())
 	//return antidote.CreateUpdateObjs(transId, key, crdtType, bucket, writeBuf)
@@ -546,9 +973,9 @@ func getRandomLocationParams() (key string, bucket string) {
 	return keys[rand.Intn(len(keys))], buckets[rand.Intn(len(buckets))]
 }
 
-//For every key combination, checks if all servers have the same results.
-//Only works for sets as of now.
-//TODO: Divide this in submethods
+// For every key combination, checks if all servers have the same results.
+// Only works for sets as of now.
+// TODO: Divide this in submethods
 func verifyReplication(crdtType proto.CRDTType) {
 	//Wait for replication
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
@@ -567,10 +994,10 @@ func verifyReplication(crdtType proto.CRDTType) {
 		results[serverID] = make([]crdt.State, 0, nObjects)
 
 		//Preparing and sending the query
-		readParams := make([]antidote.ReadObjectParams, 0, nObjects)
+		readParams := make([]crdt.ReadObjectParams, 0, nObjects)
 		for _, bucket := range buckets {
 			for _, key := range keys {
-				readParams = append(readParams, antidote.ReadObjectParams{KeyParams: antidote.CreateKeyParams(key, crdtType, bucket)})
+				readParams = append(readParams, crdt.ReadObjectParams{KeyParams: crdt.MakeKeyParams(key, crdtType, bucket)})
 			}
 		}
 		fmt.Println("Requesting read for:", readParams)
@@ -588,10 +1015,10 @@ func verifyReplication(crdtType proto.CRDTType) {
 	}
 
 	//Print reads
-	for i, _ := range results[0] {
+	for i := range results[0] {
 		fmt.Printf("Object %d states: \n", i)
 		for serverId, results := range results {
-			fmt.Printf("\tServer%d: %s\n", serverId, tools.StateToString(results[i]))
+			fmt.Printf("\tServer%d: %s\n", serverId, utilities.StateToString(results[i]))
 		}
 	}
 
@@ -671,7 +1098,7 @@ func checkStatesEquality(firstState crdt.State, secondState crdt.State) (ok bool
 }
 
 func checkCounterStatesEquality(firstState crdt.CounterState, secondState crdt.CounterState) (ok bool, reason string) {
-	return firstState.Value == secondState.Value, "Different counter values!"
+	return firstState == secondState, "Different counter values!"
 }
 
 func checkRegisterStatesEquality(firstState crdt.RegisterState, secondState crdt.RegisterState) (ok bool, reason string) {
@@ -802,7 +1229,7 @@ func benchmark() {
 
 	for i := 0; i < nClients; i++ {
 		conn, err := net.Dial("tcp", servers[i%len(servers)])
-		tools.CheckErr("Network connection establishment err", err)
+		utilities.CheckErr("Network connection establishment err", err)
 		args := &BenchmarkArgs{
 			clientID:  i,
 			nOpsRange: nOpsRange,
