@@ -61,7 +61,8 @@ const (
 var (
 	//testCrdtType = proto.CRDTType_TOPK_RMV
 	//testCrdtType = proto.CRDTType_RRMAP
-	testCrdtType = proto.CRDTType_COUNTER
+	//testCrdtType = proto.CRDTType_COUNTER
+	testCrdtType = proto.CRDTType_NOOP
 	keys         = []string{"topk1"}
 	//keys = []string{"topk1", "topk2"}
 	//keys = [4]string{"counter1", "counter2", "counter3", "counter4"}
@@ -136,6 +137,7 @@ func main() {
 	//testBoundedCounter(conns)
 	//testFlags(conns)
 	//testTopK(conns)
+	testNoOp(conns)
 	select {}
 }
 
@@ -294,6 +296,73 @@ func testRemoteOps(conns []net.Conn) {
 	fmt.Println("Read reply received")
 	clientLib.CommitTxn(conns[0], txnId)
 	fmt.Println("Commit finished")
+}
+
+func testNoOp(conns []net.Conn) {
+	addArtistSam := &crdt.AddArtist{ArtistName: "Sam"}
+	addAlbum1 := &crdt.AddAlbum{AlbumName: "A1", ArtistName: "Sam"}
+	addAlbum2 := &crdt.AddAlbum{AlbumName: "A2", ArtistName: "Sam"}
+	updArtistSam := &crdt.UpdArtist{ArtistName: "Sam"}
+	rmvArtistSam := &crdt.RmvArtist{ArtistName: "Sam"}
+
+	//addArtistFred := &crdt.AddArtist{ArtistName: "Fred"}
+	//addAlbumFred := &crdt.AddAlbum{AlbumName: "The Great Pretender", ArtistName: "Fred"}
+	//rmvArtistFred := &crdt.RmvArtist{ArtistName: "Fred"}
+
+	conn := conns[0]
+	key1, key2 := crdt.MakeKeyParams("noop_replica1_key", proto.CRDTType_NOOP, "R1"),
+		crdt.MakeKeyParams("noop_replica2_key", proto.CRDTType_NOOP, "R2")
+
+	allRead := []crdt.ReadObjectParams{{KeyParams: key1}, {KeyParams: key2}}
+	var upd1 crdt.Operation = addArtistSam
+	var upd2 crdt.Operation = addAlbum2
+	updAll := []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: upd1}, {KeyParams: key2, UpdateArgs: upd2}}
+	firstUpd := []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: upd1}}
+	//secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
+
+	fmt.Println("[TXN1]")
+	txnId := clientLib.StartTxn(conn)
+	staticReadReply := clientLib.StaticRead(conn, txnId, allRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs := staticReadReply.GetObjects().GetObjects()
+
+	fmt.Println("[MY_TEST_KEY1]", 8087)
+	crdt.PrintMusicStateFromBytes(objs[0].GetNoop().GetStateData())
+	fmt.Println("[MY_TEST_KEY2]", 8087)
+	crdt.PrintMusicStateFromBytes(objs[1].GetNoop().GetStateData())
+	//Replica1 - AddArtist(Sam)
+	txnId = clientLib.StaticUpdate(conn, txnId, firstUpd).GetCommitTime()
+	staticReadReply = clientLib.StaticRead(conn, txnId, allRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs = staticReadReply.GetObjects().GetObjects()
+
+	fmt.Println("[MY_TEST_KEY1]", 8087)
+	crdt.PrintMusicStateFromBytes(objs[0].GetNoop().GetStateData())
+	fmt.Println("[MY_TEST_KEY2]", 8087)
+	crdt.PrintMusicStateFromBytes(objs[1].GetNoop().GetStateData())
+	//AddAlbums to Sam: A1 (Replica1), A2 (Replica2)
+	upd1 = addAlbum1
+	txnId = clientLib.StaticUpdate(conn, txnId, updAll).GetCommitTime()
+	staticReadReply = clientLib.StaticRead(conn, txnId, allRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs = staticReadReply.GetObjects().GetObjects()
+
+	fmt.Println("[MY_TEST_KEY1]", 8087)
+	crdt.PrintMusicStateFromBytes(objs[0].GetNoop().GetStateData())
+	fmt.Println("[MY_TEST_KEY2]", 8087)
+	crdt.PrintMusicStateFromBytes(objs[1].GetNoop().GetStateData())
+	//UpdArtist and RmvArtist targeted at Sam
+	upd1 = updArtistSam
+	upd2 = rmvArtistSam
+	txnId = clientLib.StaticUpdate(conn, txnId, updAll).GetCommitTime()
+	staticReadReply = clientLib.StaticRead(conn, txnId, allRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs = staticReadReply.GetObjects().GetObjects()
+
+	fmt.Println("[MY_TEST_KEY1]", 8087)
+	crdt.PrintMusicStateFromBytes(objs[0].GetNoop().GetStateData())
+	fmt.Println("[MY_TEST_KEY2]", 8087)
+	crdt.PrintMusicStateFromBytes(objs[1].GetNoop().GetStateData())
 }
 
 func testStaticRead(connection net.Conn, crdtType proto.CRDTType, nReads int) (receivedProto pb.Message) {
