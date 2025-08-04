@@ -73,7 +73,8 @@ var (
 	//mapKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
 	mapKeys = []string{"1", "2", "3", "4"}
 	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089"}
-	servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089", "127.0.0.1:8090", "127.0.0.1:8091"}
+	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089", "127.0.0.1:8090", "127.0.0.1:8091"}
+	servers = []string{"localhost:8087"}
 	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
 	//servers  = []string{"127.0.0.1:8087"}
 	embTypes = []proto.CRDTType{proto.CRDTType_TOPK_RMV,
@@ -137,7 +138,8 @@ func main() {
 	//testBoundedCounter(conns)
 	//testFlags(conns)
 	//testTopK(conns)
-	testNoOp(conns)
+	//testNoOp(conns)
+	notSophiaTestMix2(conns)
 	select {}
 }
 
@@ -321,9 +323,10 @@ func testNoOp(conns []net.Conn) {
 	//secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
 
 	fmt.Println("[TXN1]")
-	txnId := clientLib.StartTxn(conn)
-	staticReadReply := clientLib.StaticRead(conn, txnId, allRead)
-	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	fmt.Println("5-after connection start")
+	staticReadReply := clientLib.StaticRead(conn, nil, allRead)
+	fmt.Println("6-after first allRead")
+	txnId := staticReadReply.GetCommittime().GetCommitTime()
 	objs := staticReadReply.GetObjects().GetObjects()
 
 	fmt.Println("[MY_TEST_KEY1]", 8087)
@@ -363,6 +366,21 @@ func testNoOp(conns []net.Conn) {
 	crdt.PrintMusicStateFromBytes(objs[0].GetNoop().GetStateData())
 	fmt.Println("[MY_TEST_KEY2]", 8087)
 	crdt.PrintMusicStateFromBytes(objs[1].GetNoop().GetStateData())
+}
+
+func notSophiaTestMix2(conns []net.Conn) {
+	conn := conns[0]
+	key1, key2 := crdt.MakeKeyParams("some_key_counter", proto.CRDTType_NOOP , "R1"),
+		crdt.MakeKeyParams("snd_key_counter", proto.CRDTType_NOOP , "R2")
+
+	//key1, key2, key3 := crdt.MakeKeyParams("some_key_counter", proto.CRDTType_COUNTER, "some_bucket"),
+	//	crdt.MakeKeyParams("some_other_key_counter", proto.CRDTType_COUNTER, "some_bucket"),
+	//	crdt.MakeKeyParams("some_key_orset", proto.CRDTType_ORSET, "some_bucket")
+	allRead := []crdt.ReadObjectParams{{KeyParams: key1}, {KeyParams: key2}}
+
+	fmt.Println("[TXN4]")
+	clientLib.StaticRead(conn, nil, allRead)
+	fmt.Println("end")
 }
 
 func testStaticRead(connection net.Conn, crdtType proto.CRDTType, nReads int) (receivedProto pb.Message) {
