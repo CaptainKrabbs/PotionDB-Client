@@ -323,9 +323,7 @@ func testNoOp(conns []net.Conn) {
 	//secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
 
 	fmt.Println("[TXN1]")
-	fmt.Println("5-after connection start")
 	staticReadReply := clientLib.StaticRead(conn, nil, allRead)
-	fmt.Println("6-after first allRead")
 	txnId := staticReadReply.GetCommittime().GetCommitTime()
 	objs := staticReadReply.GetObjects().GetObjects()
 
@@ -370,17 +368,44 @@ func testNoOp(conns []net.Conn) {
 
 func notSophiaTestMix2(conns []net.Conn) {
 	conn := conns[0]
-	key1, key2 := crdt.MakeKeyParams("some_key_counter", proto.CRDTType_NOOP , "R1"),
-		crdt.MakeKeyParams("snd_key_counter", proto.CRDTType_NOOP , "R2")
+	key1, key2 := crdt.MakeKeyParams("noop_replica1_key", proto.CRDTType_NOOP, "R1"),
+		crdt.MakeKeyParams("noop_replica2_key", proto.CRDTType_NOOP, "R2")
 
-	//key1, key2, key3 := crdt.MakeKeyParams("some_key_counter", proto.CRDTType_COUNTER, "some_bucket"),
-	//	crdt.MakeKeyParams("some_other_key_counter", proto.CRDTType_COUNTER, "some_bucket"),
-	//	crdt.MakeKeyParams("some_key_orset", proto.CRDTType_ORSET, "some_bucket")
+	var upd0 crdt.Operation = &crdt.DetermineStateOp{NewStateCode: (&crdt.MusicState{}).GetStateCode()}
+
 	allRead := []crdt.ReadObjectParams{{KeyParams: key1}, {KeyParams: key2}}
+	startUpd := []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: upd0}}
+	//secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
 
-	fmt.Println("[TXN4]")
-	clientLib.StaticRead(conn, nil, allRead)
-	fmt.Println("end")
+	fmt.Println("[TXN1]")
+	staticReadReply := clientLib.StaticRead(conn, nil, allRead)
+	txnId := staticReadReply.GetCommittime().GetCommitTime()
+	objs := staticReadReply.GetObjects().GetObjects()
+	//Settings state hasn't been done yet
+	displayNoOpStateData(objs)
+
+	fmt.Println("New proposed state code:", (&crdt.MusicState{}).GetStateCode())
+
+	txnId = clientLib.StaticUpdate(conn, txnId, startUpd).GetCommitTime()
+
+	//wait before reading
+	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
+	fmt.Println("Finished waiting")
+	staticReadReply = clientLib.StaticRead(conn, txnId, allRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs = staticReadReply.GetObjects().GetObjects()
+
+	displayNoOpStateData(objs)
+}
+
+func displayNoOpStateData(objs []*proto.ApbReadObjectResp) {
+	for i, obj := range objs {
+		fmt.Printf("[MY_TEST_KEY%v] %v StateCode: %v\n", i, 8087, obj.GetNoop().GetStateCode())
+		switch obj.GetNoop().GetStateCode() {
+		case (&crdt.MusicState{}).GetStateCode():
+			crdt.PrintMusicStateFromBytes(obj.GetNoop().GetStateData())
+		}
+	}
 }
 
 func testStaticRead(connection net.Conn, crdtType proto.CRDTType, nReads int) (receivedProto pb.Message) {
