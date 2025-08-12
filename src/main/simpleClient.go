@@ -74,8 +74,9 @@ var (
 	mapKeys = []string{"1", "2", "3", "4"}
 	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089"}
 	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089", "127.0.0.1:8090", "127.0.0.1:8091"}
-	servers = []string{"localhost:8087"}
-	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
+	//servers = []string{"127.0.0.1:8087"}
+	//servers = []string{"localhost:8087"}
+	servers = []string{"127.0.0.1:8087", "127.0.0.1:8088"}
 	//servers  = []string{"127.0.0.1:8087"}
 	embTypes = []proto.CRDTType{proto.CRDTType_TOPK_RMV,
 		proto.CRDTType_ORSET, proto.CRDTType_MAXMIN}
@@ -139,6 +140,7 @@ func main() {
 	//testFlags(conns)
 	//testTopK(conns)
 	//testNoOp(conns)
+	//sophiaTXN4Wait(conns)
 	notSophiaTestMix2(conns)
 	select {}
 }
@@ -288,6 +290,42 @@ func sophiaTestMix2(conns []net.Conn) {
 	fmt.Println("[MY_TEST_KEY3]", 8087, objs[2].GetSet().GetValue())
 }
 
+func sophiaTXN4Wait(conns []net.Conn) {
+	conn := conns[0]
+	key1, key2 := crdt.MakeKeyParams("some_key_counter", proto.CRDTType_COUNTER, "R2"),
+		crdt.MakeKeyParams("some_other_key_counter", proto.CRDTType_COUNTER, "R1")
+
+	//key1, key2, key3 := crdt.MakeKeyParams("some_key_counter", proto.CRDTType_COUNTER, "some_bucket"),
+	//	crdt.MakeKeyParams("some_other_key_counter", proto.CRDTType_COUNTER, "some_bucket"),
+	//	crdt.MakeKeyParams("some_key_orset", proto.CRDTType_ORSET, "some_bucket")
+	allRead := []crdt.ReadObjectParams{{KeyParams: key1}, {KeyParams: key2}}
+	firstTwoRead := []crdt.ReadObjectParams{{KeyParams: key1}, {KeyParams: key2}}
+
+	//upd1 := crdt.Increment{Change: 2}
+	upd2 := crdt.Increment{Change: 3}
+
+	//updAll := []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: upd1}, {KeyParams: key2, UpdateArgs: upd2}}
+	secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
+
+
+	fmt.Println("[TXN4]")
+	staticReadReply := clientLib.StaticRead(conn, nil, firstTwoRead)
+	txnId := staticReadReply.GetCommittime().GetCommitTime()
+	objs := staticReadReply.GetObjects().GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY2]", 8087, objs[1].GetCounter().GetValue())
+	txnId = clientLib.StaticUpdate(conn, txnId, secondUpd).GetCommitTime()
+
+	//wait
+	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
+
+	staticReadReply = clientLib.StaticRead(conn, txnId, allRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs = staticReadReply.GetObjects().GetObjects()
+	fmt.Println("[MY_TEST_KEY1]", 8087, objs[0].GetCounter().GetValue())
+	fmt.Println("[MY_TEST_KEY2]", 8087, objs[1].GetCounter().GetValue())
+}
+
 // Assumes a list of connections and two or more buckets
 func testRemoteOps(conns []net.Conn) {
 	txnId := clientLib.StartTxn(conns[0])
@@ -367,35 +405,57 @@ func testNoOp(conns []net.Conn) {
 }
 
 func notSophiaTestMix2(conns []net.Conn) {
+	//addArtistSam := &crdt.AddArtist{ArtistName: "Sam"}
+	/*
+	addAlbum1 := &crdt.AddAlbum{AlbumName: "A1", ArtistName: "Sam"}
+	addAlbum2 := &crdt.AddAlbum{AlbumName: "A2", ArtistName: "Sam"}
+	updArtistSam := &crdt.UpdArtist{ArtistName: "Sam"}
+	rmvArtistSam := &crdt.RmvArtist{ArtistName: "Sam"}
+	*/
+
 	conn := conns[0]
 	key1, key2 := crdt.MakeKeyParams("noop_replica1_key", proto.CRDTType_NOOP, "R1"),
 		crdt.MakeKeyParams("noop_replica2_key", proto.CRDTType_NOOP, "R2")
 
-	var upd0 crdt.Operation = &crdt.DetermineStateOp{NewStateCode: (&crdt.MusicState{}).GetStateCode()}
+	//var upd0 crdt.Operation = &crdt.DetermineStateOp{NewStateCode: (&crdt.MusicState{}).GetStateCode()}
 
 	allRead := []crdt.ReadObjectParams{{KeyParams: key1}, {KeyParams: key2}}
-	startUpd := []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: upd0}}
+	//nextUpd := []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: upd0}}
 	//secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
 
 	fmt.Println("[TXN1]")
 	staticReadReply := clientLib.StaticRead(conn, nil, allRead)
-	txnId := staticReadReply.GetCommittime().GetCommitTime()
+	//txnId := staticReadReply.GetCommittime().GetCommitTime()
 	objs := staticReadReply.GetObjects().GetObjects()
 	//Settings state hasn't been done yet
 	displayNoOpStateData(objs)
-
+	/*
 	fmt.Println("New proposed state code:", (&crdt.MusicState{}).GetStateCode())
 
-	txnId = clientLib.StaticUpdate(conn, txnId, startUpd).GetCommitTime()
+	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
 
 	//wait before reading
-	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
+	//time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
 	fmt.Println("Finished waiting")
 	staticReadReply = clientLib.StaticRead(conn, txnId, allRead)
 	txnId = staticReadReply.GetCommittime().GetCommitTime()
 	objs = staticReadReply.GetObjects().GetObjects()
 
 	displayNoOpStateData(objs)
+
+	//addArtistSam
+	upd0 = addArtistSam
+	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+
+	//wait before reading
+	//time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
+	fmt.Println(upd0.String())
+	staticReadReply = clientLib.StaticRead(conn, txnId, allRead)
+	txnId = staticReadReply.GetCommittime().GetCommitTime()
+	objs = staticReadReply.GetObjects().GetObjects()
+
+	displayNoOpStateData(objs)
+	*/
 }
 
 func displayNoOpStateData(objs []*proto.ApbReadObjectResp) {
