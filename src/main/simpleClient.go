@@ -72,8 +72,8 @@ var (
 	elems   = []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 	//mapKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
 	mapKeys = []string{"1", "2", "3", "4"}
-	servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089"}
-	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089", "127.0.0.1:8090", "127.0.0.1:8091"}
+	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089"}
+	servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089", "127.0.0.1:8090", "127.0.0.1:8091"}
 	//servers = []string{"127.0.0.1:8087"}
 	//servers = []string{"localhost:8087"}
 	//servers = []string{"localhost:8087", "localhost:8088"}
@@ -140,8 +140,8 @@ func main() {
 	//testBoundedCounter(conns)
 	//testFlags(conns)
 	//testTopK(conns)
-	//testNoOp(conns)
-	testNoOp2(conns)
+	testNoOp(conns)
+	//testNoOp2(conns)
 	//sophiaTXN4Wait(conns)
 	select {}
 }
@@ -345,6 +345,9 @@ func testRemoteOps(conns []net.Conn) {
 	fmt.Println("Commit finished")
 }
 
+/*
+Basic test that checks for conflicting operations (doesn't happen in this format)
+*/
 func testNoOp(conns []net.Conn) {
 	addArtistSam := &crdt.AddArtist{ArtistName: "Sam"}
 	addAlbum1 := &crdt.AddAlbum{AlbumName: "A1", ArtistName: "Sam"}
