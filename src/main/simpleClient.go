@@ -73,7 +73,7 @@ var (
 	//mapKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
 	mapKeys = []string{"1", "2", "3", "4"}
 	//servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089"}
-	servers = []string{"127.0.0.1:8087", "127.0.0.1:8088", "127.0.0.1:8089", "127.0.0.1:8090", "127.0.0.1:8091"}
+	servers = []string{"127.0.0.1:8089", "127.0.0.1:8088", "127.0.0.1:8089", "127.0.0.1:8090", "127.0.0.1:8091"}
 	//servers = []string{"127.0.0.1:8087"}
 	//servers = []string{"localhost:8087"}
 	//servers = []string{"localhost:8087", "localhost:8088"}
@@ -140,8 +140,9 @@ func main() {
 	//testBoundedCounter(conns)
 	//testFlags(conns)
 	//testTopK(conns)
-	testNoOp(conns)
+	testNoOp2(conns)
 	//testNoOp2(conns)
+	//testNoOpBot(conns)
 	//sophiaTXN4Wait(conns)
 	select {}
 }
@@ -355,7 +356,7 @@ func testNoOp(conns []net.Conn) {
 	updArtistSam := &crdt.UpdArtist{ArtistName: "Sam"}
 	rmvArtistSam := &crdt.RmvArtist{ArtistName: "Sam"}
 
-	conn := conns[0]
+	//conn := conns[0]
 	key1 := crdt.MakeKeyParams("noop_replica1_key", proto.CRDTType_NOOP, "R1")
 
 	var upd0 crdt.Operation = &crdt.DetermineStateOp{NewStateCode: (&crdt.MusicState{}).GetStateCode()}
@@ -365,50 +366,48 @@ func testNoOp(conns []net.Conn) {
 	//secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
 
 	fmt.Println("[TXN1]")
-	txnId := []byte{}
 	//Settings state hasn't been done yet
-	displayBothReps(conns, &txnId, allRead)
-	
+	displayBothReps(conns, allRead)
+
 	fmt.Println("New proposed state code:", (&crdt.MusicState{}).GetStateCode())
 
-	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[1], nil, nextUpd).GetCommitTime()
 
 	//wait before reading
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
 	fmt.Println("Finished waiting")
-	displayBothReps(conns, &txnId, allRead)
+	displayBothReps(conns, allRead)
 
 	//addArtistSam
 	fmt.Println("Next Operation:", addArtistSam.String())
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addArtistSam}}
-	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[1], nil, nextUpd).GetCommitTime()
 
 	//wait before reading
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
-	displayBothReps(conns, &txnId, allRead)
-
+	displayBothReps(conns, allRead)
 
 	//AddAlbums to Sam: A1 (Replica1), A2 (Replica2)
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addAlbum1}}
-	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[1], nil, nextUpd).GetCommitTime()
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addAlbum2}}
-	txnId = clientLib.StaticUpdate(conns[1], txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[2], nil, nextUpd).GetCommitTime()
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
-	displayBothReps(conns, &txnId, allRead)
+	displayBothReps(conns, allRead)
 
 	//UpdArtist and RmvArtist targeted at Sam
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: updArtistSam}}
-	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[1], nil, nextUpd).GetCommitTime()
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: rmvArtistSam}}
-	txnId = clientLib.StaticUpdate(conns[1], txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[2], nil, nextUpd).GetCommitTime()
 
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
-	displayBothReps(conns, &txnId, allRead)
+	displayBothReps(conns, allRead)
 }
 
-//requires 3 connections
+// requires 3 connections
 func testNoOp2(conns []net.Conn) {
-addArtistSam := &crdt.AddArtist{ArtistName: "Sam"}
+	addArtistSam := &crdt.AddArtist{ArtistName: "Sam"}
 	addAlbum1 := &crdt.AddAlbum{AlbumName: "A1", ArtistName: "Sam"}
 	addAlbum2 := &crdt.AddAlbum{AlbumName: "A2", ArtistName: "Sam"}
 	//updArtistSam := &crdt.UpdArtist{ArtistName: "Sam"}
@@ -419,9 +418,9 @@ addArtistSam := &crdt.AddArtist{ArtistName: "Sam"}
 	rmvArtistFred := &crdt.RmvArtist{ArtistName: "Fred"}
 
 	addArtistMonke := &crdt.AddArtist{ArtistName: "Monke"}
-	addAlbumMonke1 :=  &crdt.AddAlbum{AlbumName: "Tearing felt", ArtistName: "Monke"}
-	addAlbumMonke2 :=  &crdt.AddAlbum{AlbumName: "Winding up", ArtistName: "Monke"}
-	addAlbumMonke3 :=  &crdt.AddAlbum{AlbumName: "Cymbal clatter", ArtistName: "Monke"}
+	addAlbumMonke1 := &crdt.AddAlbum{AlbumName: "Tearing felt", ArtistName: "Monke"}
+	addAlbumMonke2 := &crdt.AddAlbum{AlbumName: "Winding up", ArtistName: "Monke"}
+	addAlbumMonke3 := &crdt.AddAlbum{AlbumName: "Cymbal clatter", ArtistName: "Monke"}
 
 	conn := conns[0]
 	key1 := crdt.MakeKeyParams("noop_replica1_key", proto.CRDTType_NOOP, "R1")
@@ -433,74 +432,110 @@ addArtistSam := &crdt.AddArtist{ArtistName: "Sam"}
 	//secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
 
 	fmt.Println("[TXN1]")
-	txnId := []byte{}
 	//Settings state hasn't been done yet
-	displayBothReps(conns, &txnId, allRead)
-	
+	displayBothReps(conns, allRead)
+
 	fmt.Println("New proposed state code:", (&crdt.MusicState{}).GetStateCode())
 
-	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conn, nil, nextUpd).GetCommitTime()
 
 	//wait before reading
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
 	fmt.Println("Finished waiting")
-	displayBothReps(conns, &txnId, allRead)
+	displayBothReps(conns, allRead)
 
 	//addArtistSam
 	fmt.Println("Next Operation:", addArtistSam.String())
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addArtistSam}}
-	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conn, nil, nextUpd).GetCommitTime()
 
 	//wait before reading
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
-	displayBothReps(conns, &txnId, allRead)
-
+	displayBothReps(conns, allRead)
 
 	//AddAlbums to Sam: A1 (Replica1), A2 (Replica2)
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addAlbum1}}
-	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conn, nil, nextUpd).GetCommitTime()
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addAlbum2}}
-	txnId = clientLib.StaticUpdate(conns[1], txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[1], nil, nextUpd).GetCommitTime()
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
-	displayBothReps(conns, &txnId, allRead)
+	displayBothReps(conns, allRead)
 
 	fmt.Println("AddArtist Fred")
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addArtistFred}}
-	txnId = clientLib.StaticUpdate(conns[1], txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[1], nil, nextUpd).GetCommitTime()
 
 	fmt.Println("AddArtist Monke, and AddAlbumMonke1")
 	//(if simultaneous album shouldn't save due to not meeting preconditions, if sequential it will be saved)
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addArtistMonke}}
-	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conn, nil, nextUpd).GetCommitTime()
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addAlbumMonke1}}
-	txnId = clientLib.StaticUpdate(conns[1], txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[1], nil, nextUpd).GetCommitTime()
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
-	displayBothReps(conns, &txnId, allRead)
+	displayBothReps(conns, allRead)
 
 	fmt.Println("RmvArtist Sam, AddAlbumMonke2, AddAlbumFred")
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: rmvArtistSam}}
-	txnId = clientLib.StaticUpdate(conn, txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conn, nil, nextUpd).GetCommitTime()
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addAlbumMonke2}}
-	txnId = clientLib.StaticUpdate(conns[1], txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[1], nil, nextUpd).GetCommitTime()
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addAlbumFred}}
-	txnId = clientLib.StaticUpdate(conns[2], txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[2], nil, nextUpd).GetCommitTime()
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
-	displayBothReps(conns, &txnId, allRead)
+	displayBothReps(conns, allRead)
 
 	fmt.Println("RmvArtistFred, AddAlbumMonke3")
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addAlbumMonke3}}
-	txnId = clientLib.StaticUpdate(conns[1], txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[1], nil, nextUpd).GetCommitTime()
 	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: rmvArtistFred}}
-	txnId = clientLib.StaticUpdate(conns[2], txnId, nextUpd).GetCommitTime()
+	clientLib.StaticUpdate(conns[2], nil, nextUpd).GetCommitTime()
 	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
-	displayBothReps(conns, &txnId, allRead)
+	displayBothReps(conns, allRead)
 }
 
-func displayBothReps(conns []net.Conn, txnId *[]byte, reads []crdt.ReadObjectParams) {
+/*
+Basic test that checks for how an unmet precondition is dealt with (NoOp does not have the same state code as MusicState)
+*/
+func testNoOpBot(conns []net.Conn) {
+	addAlbum1 := &crdt.AddAlbum{AlbumName: "A1", ArtistName: "Sam"}
+
+	conn := conns[0]
+	key1 := crdt.MakeKeyParams("noop_replica1_key", proto.CRDTType_NOOP, "R1")
+
+	var upd0 crdt.Operation = &crdt.DetermineStateOp{NewStateCode: (&crdt.MusicState{}).GetStateCode()}
+
+	allRead := []crdt.ReadObjectParams{{KeyParams: key1}}
+	nextUpd := []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: upd0}}
+	//secondUpd := []crdt.UpdateObjectParams{{KeyParams: key2, UpdateArgs: upd2}}
+
+	fmt.Println("[TXN1]")
+	//Settings state hasn't been done yet
+	displayBothReps(conns, allRead)
+
+	fmt.Println("New proposed state code:", (&crdt.MusicState{}).GetStateCode())
+
+	clientLib.StaticUpdate(conn, nil, nextUpd).GetCommitTime()
+
+	//wait before reading
+	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
+	fmt.Println("Finished waiting")
+	displayBothReps(conns, allRead)
+
+	//addArtistSam
+	fmt.Println("Next Operation:", addAlbum1.String())
+	nextUpd = []crdt.UpdateObjectParams{{KeyParams: key1, UpdateArgs: addAlbum1}}
+	clientLib.StaticUpdate(conn, nil, nextUpd).GetCommitTime()
+
+	//wait before reading
+	time.Sleep(time.Duration(sleepBeforeVerify) * time.Millisecond)
+	displayBothReps(conns, allRead)
+}
+
+func displayBothReps(conns []net.Conn, reads []crdt.ReadObjectParams) {
 	for i, conn := range conns {
 		fmt.Println("Rep", i+1)
-		staticReadReply := clientLib.StaticRead(conn, *txnId, reads)
-		*txnId = staticReadReply.GetCommittime().GetCommitTime()
+		staticReadReply := clientLib.StaticRead(conn, nil, reads)
+		staticReadReply.GetCommittime().GetCommitTime()
 		objs := staticReadReply.GetObjects().GetObjects()
 		displayNoOpStateData(objs)
 	}
